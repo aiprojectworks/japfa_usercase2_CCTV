@@ -1,0 +1,8 @@
+.env
+.python-version
+#*.xlsx
+#*.csv
+*.db
+__pycache__
+.DS_Store
+*secrets.toml
