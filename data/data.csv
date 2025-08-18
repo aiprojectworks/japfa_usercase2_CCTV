@@ -1,12 +1,13 @@
-时间,厂区,受检环节,违规与异常类型,问题点图片,resolved,confirmed
-02/26/25 04:38 PM,"KP2,Jabar,Indonesia",Fumigasi Barang A1-A2,有员工离岗,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121/1740559039172-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121.jpg,true,false
-02/26/25 03:23 PM,"KP2,Jabar,Indonesia",test112,有员工离岗,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112/1740554568772-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112.jpg,true,true
-02/26/25 11:02 AM,"KP2,Jabar,Indonesia",test112,车辆通行违规,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112/1740538716567-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112.jpg,true,false
-06/27/25 02:41 PM,"KP1, Production Line A",Assembly Station 3,员工未佩戴安全帽,https://example.com/safety_helmet_violation.jpg,true,false
-02/26/25 11:02 AM,"KP2,Jabar,Indonesia",test112,车辆通行违规,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112/1740538716567-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112.jpg,true,false
-02/26/25 11:02 AM,"KP2,Jabar,Indonesia",test112,车辆通行违规,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112/1740538716567-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112.jpg,false,false
-02/26/25 11:02 AM,"KP2,Jabar,Indonesia",test112,车辆通行违规,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112/1740538716567-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112.jpg,false,true
-02/26/25 04:38 PM,"KP2,Jabar,Indonesia",Fumigasi Barang A1-A2,有员工离岗,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121/1740559039172-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121.jpg,false,true
-06/27/25 03:55 PM,"KP3, Quality Control",Inspection Area,工作区域未清洁,https://example.com/cleanliness_violation.jpg,true,false
-06/27/25 03:55 PM,"KP3, Quality Control",Inspection Area,工作区域未清洁,https://example.com/cleanliness_violation.jpg,true,false
-02/26/25 04:38 PM,"KP2,Jabar,Indonesia",Fumigasi Barang A1-A2,有员工离岗,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121/1740559039172-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121.jpg,true,false
+时间,厂区,受检环节,违规与异常类型,问题点图片,resolved
+02/26/25 04:38 PM,"KP2,Jabar,Indonesia",Fumigasi Barang A1-A2,有员工离岗,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121/1740559039172-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121.jpg,true
+02/26/25 03:23 PM,"KP2,Jabar,Indonesia",test112,有员工离岗,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112/1740554568772-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112.jpg,true
+02/26/25 11:02 AM,"KP2,Jabar,Indonesia",test112,车辆通行违规,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112/1740538716567-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112.jpg,true
+06/27/25 02:41 PM,"KP1, Production Line A",Assembly Station 3,员工未佩戴安全帽,https://example.com/safety_helmet_violation.jpg,true
+02/26/25 11:02 AM,"KP2,Jabar,Indonesia",test112,车辆通行违规,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112/1740538716567-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112.jpg,true
+02/26/25 11:02 AM,"KP2,Jabar,Indonesia",test112,车辆通行违规,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112/1740538716567-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112.jpg,true
+02/26/25 11:02 AM,"KP2,Jabar,Indonesia",test112,车辆通行违规,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112/1740538716567-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.112.jpg,false
+02/26/25 04:38 PM,"KP2,Jabar,Indonesia",Fumigasi Barang A1-A2,有员工离岗,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121/1740559039172-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121.jpg,false
+06/27/25 03:55 PM,"KP3, Quality Control",Inspection Area,工作区域未清洁,https://example.com/cleanliness_violation.jpg,true
+06/27/25 03:55 PM,"KP3, Quality Control",Inspection Area,工作区域未清洁,https://example.com/cleanliness_violation.jpg,true
+02/26/25 04:38 PM,"KP2,Jabar,Indonesia",Fumigasi Barang A1-A2,有员工离岗,http://www.heysens.cloud/cos/device/2025-02-26/d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121/1740559039172-d06d10a2-ad0b-48ad-8558-f18a46d93042_0_10.21.113.121.jpg,true
+07/18/25 04:03 AM,"KP1, Production Line A",Assembly Station 3,员工未佩戴安全帽,https://example.com/safety_helmet_violation.jpg,false

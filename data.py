@@ -1,255 +1,308 @@
-import csv
 from datetime import datetime
 from dataclasses import dataclass
 from typing import List
+import os
+import snowflake.connector
+from dotenv import load_dotenv
+
+# Load environment variables (for local development or production)
+load_dotenv()
+username = os.getenv("JAPFA_user")
+password = os.getenv("JAPFA_password")
+snowflake_account = os.getenv("JAPFA_account")
+database = os.getenv("JAPFA_database")
+schema = os.getenv("JAPFA_schema")
+warehouse = os.getenv("JAPFA_warehouse")
+role = os.getenv("JAPFA_role")
+
+TABLE_NAME = "SWINE_NEW_ALERT"
+CHAT_IDS_TABLE = "WHATSAPP_CHAT_IDS"
+
+def get_snowflake_connection():
+    return snowflake.connector.connect(
+        user=username,
+        password=password,
+        account=snowflake_account,
+        warehouse=warehouse,
+        database=database,
+        schema=schema,
+        role=role,
+    )
 
 @dataclass
 class ViolationRecord:
-    timestamp: datetime
+    timestamp: str
     factory_area: str
     inspection_section: str
     violation_type: str
     image_url: str
     resolved: bool = False
-    confirmed: bool = False
     row_index: int = -1
 
     @classmethod
-    def from_csv_row(cls, row: List[str], row_index: int = -1) -> 'ViolationRecord':
-        # Clean and validate row data
-        timestamp_str = row[0].strip()
-        factory_area = row[1].strip() if len(row) > 1 else ""
-        inspection_section = row[2].strip() if len(row) > 2 else ""
-        violation_type = row[3].strip() if len(row) > 3 else ""
-        image_url = row[4].strip() if len(row) > 4 else ""
-        resolved = row[5].lower().strip() == 'true' if len(row) > 5 and row[5].strip() else False
-        confirmed = row[6].lower().strip() == 'true' if len(row) > 6 and row[6].strip() else False
-        
-        timestamp = datetime.strptime(timestamp_str, "%m/%d/%y %I:%M %p")
-        
+    def from_snowflake_row(cls, row, row_index: int = -1):
+        # row: (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY)
+        timestamp_str = row[0]
+        factory_area = row[1]
+        inspection_section = row[2]
+        violation_type = row[3]
+        image_url = row[4]
+        resolved = (row[5] or "").strip().lower() == "true"
         return cls(
-            timestamp=timestamp,
+            timestamp=timestamp_str,
             factory_area=factory_area,
             inspection_section=inspection_section,
             violation_type=violation_type,
             image_url=image_url,
             resolved=resolved,
-            confirmed=confirmed,
             row_index=row_index
         )
 
 class DataParser:
-    def __init__(self, file_path: str = None):
-        import os
-        if file_path is None:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            file_path = os.path.join(script_dir, "data", "data.csv")
-        self.file_path = file_path
+    def __init__(self):
         self.records: List[ViolationRecord] = []
 
     def parse(self) -> List[ViolationRecord]:
-        self.records = []  # Clear existing records
-        
+        """Fetch all violation records from Snowflake."""
+        self.records = []
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
         try:
-            with open(self.file_path, 'r', encoding='utf-8') as file:
-                csv_reader = csv.reader(file)
-                header = next(csv_reader, None)  # Skip header row, handle empty file
-                
-                if header is None:
-                    return self.records
-
-                for row_index, row in enumerate(csv_reader, start=2):  # Start at 2 (header is row 1)
-                    # Skip empty rows or rows with insufficient data
-                    if len(row) < 5 or not row[0].strip():
-                        continue
-                    
-                    try:
-                        # Validate timestamp format before creating record
-                        datetime.strptime(row[0].strip(), "%m/%d/%y %I:%M %p")
-                        record = ViolationRecord.from_csv_row(row, row_index)
-                        self.records.append(record)
-                    except ValueError as e:
-                        # Log malformed timestamp but continue processing
-                        print(f"Warning: Skipping row {row_index} due to invalid timestamp '{row[0]}': {e}")
-                        continue
-                    except Exception as e:
-                        # Log other parsing errors but continue
-                        print(f"Warning: Skipping row {row_index} due to parsing error: {e}")
-                        continue
-
-        except FileNotFoundError:
-            print(f"Warning: CSV file not found at {self.file_path}")
-        except Exception as e:
-            print(f"Error reading CSV file: {e}")
-
+            cs.execute(f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY FROM {TABLE_NAME}")
+            rows = cs.fetchall()
+            for idx, row in enumerate(rows, start=1):
+                record = ViolationRecord.from_snowflake_row(row, idx)
+                self.records.append(record)
+        finally:
+            cs.close()
+            conn.close()
         return self.records
 
     def get_records_by_violation_type(self, violation_type: str) -> List[ViolationRecord]:
-        return [record for record in self.records if record.violation_type == violation_type]
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        records = []
+        try:
+            cs.execute(
+                f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY FROM {TABLE_NAME} WHERE VIOLATION_TYPE = %s",
+                (violation_type,)
+            )
+            rows = cs.fetchall()
+            for idx, row in enumerate(rows, start=1):
+                records.append(ViolationRecord.from_snowflake_row(row, idx))
+        finally:
+            cs.close()
+            conn.close()
+        return records
 
     def get_records_by_factory_area(self, factory_area: str) -> List[ViolationRecord]:
-        return [record for record in self.records if record.factory_area == factory_area]
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        records = []
+        try:
+            cs.execute(
+                f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY FROM {TABLE_NAME} WHERE FARM_LOCATION = %s",
+                (factory_area,)
+            )
+            rows = cs.fetchall()
+            for idx, row in enumerate(rows, start=1):
+                records.append(ViolationRecord.from_snowflake_row(row, idx))
+        finally:
+            cs.close()
+            conn.close()
+        return records
 
     def update_resolved_status(self, row_index: int, resolved: bool = True) -> bool:
-        """Update the resolved status of a record in the CSV file"""
-        import tempfile
-        import shutil
-        
-        try:
-            # Read all lines
-            with open(self.file_path, 'r', encoding='utf-8') as file:
-                lines = list(csv.reader(file))
-            
-            # Update the specific row
-            if 0 < row_index <= len(lines):
-                if len(lines[row_index - 1]) >= 6:
-                    lines[row_index - 1][5] = str(resolved).lower()
-                else:
-                    lines[row_index - 1].append(str(resolved).lower())
-                
-                # Ensure confirmed column exists
-                if len(lines[row_index - 1]) < 7:
-                    lines[row_index - 1].append('false')
-                
-                # Write back to file
-                with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8', newline='') as temp_file:
-                    writer = csv.writer(temp_file)
-                    writer.writerows(lines)
-                    temp_file_path = temp_file.name
-                
-                shutil.move(temp_file_path, self.file_path)
-                
-                # Update the record in memory
-                for record in self.records:
-                    if record.row_index == row_index:
-                        record.resolved = resolved
-                        break
-                
-                return True
-        except Exception as e:
-            print(f"Error updating CSV: {e}")
+        """Update the resolved status of a record in Snowflake by row index (1-based)."""
+        # Fetch all records to get the timestamp and factory_area for the given row_index
+        records = self.parse()
+        if not (1 <= row_index <= len(records)):
             return False
-        
-        return False
+        record = records[row_index - 1]
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        try:
+            cs.execute(
+                f"""UPDATE {TABLE_NAME}
+                SET REPLY = %s
+                WHERE TIMESTAMP = %s AND FARM_LOCATION = %s AND INSPECTION_AREA = %s AND VIOLATION_TYPE = %s AND IMAGE_URL = %s""",
+                (str(resolved).lower(), record.timestamp, record.factory_area, record.inspection_section, record.violation_type, record.image_url)
+            )
+            conn.commit()
+            # Update in-memory record
+            record.resolved = resolved
+            return True
+        except Exception as e:
+            print(f"Error updating Snowflake: {e}")
+            return False
+        finally:
+            cs.close()
+            conn.close()
 
     def get_unresolved_records(self) -> List[ViolationRecord]:
-        """Get all unresolved violation records"""
-        return [record for record in self.records if not record.resolved]
-
-    def get_unconfirmed_records(self) -> List[ViolationRecord]:
-        """Get all unconfirmed violation records"""
-        return [record for record in self.records if not record.confirmed]
-
-    def update_confirmed_status(self, row_index: int, confirmed: bool = True) -> bool:
-        """Update the confirmed status of a record in the CSV file"""
-        import tempfile
-        import shutil
-        
+        """Get all unresolved violation records from Snowflake."""
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        records = []
         try:
-            # Read all lines
-            with open(self.file_path, 'r', encoding='utf-8') as file:
-                lines = list(csv.reader(file))
-            
-            # Update the specific row
-            if 0 < row_index <= len(lines):
-                # Ensure we have enough columns
-                while len(lines[row_index - 1]) < 7:
-                    lines[row_index - 1].append('false')
-                
-                lines[row_index - 1][6] = str(confirmed).lower()
-                
-                # Write back to file
-                with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8', newline='') as temp_file:
-                    writer = csv.writer(temp_file)
-                    writer.writerows(lines)
-                    temp_file_path = temp_file.name
-                
-                shutil.move(temp_file_path, self.file_path)
-                
-                # Update the record in memory
-                for record in self.records:
-                    if record.row_index == row_index:
-                        record.confirmed = confirmed
-                        break
-                
-                return True
-        except Exception as e:
-            print(f"Error updating CSV: {e}")
-            return False
-        
-        return False
+            cs.execute(
+                f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY FROM {TABLE_NAME} WHERE REPLY IS NULL OR LOWER(REPLY) != 'true'"
+            )
+            rows = cs.fetchall()
+            for idx, row in enumerate(rows, start=1):
+                records.append(ViolationRecord.from_snowflake_row(row, idx))
+        finally:
+            cs.close()
+            conn.close()
+        return records
 
     def add_example_violation(self) -> ViolationRecord:
-        """Add an example violation to the CSV file for testing"""
-        from datetime import datetime
+        """Add an example violation to Snowflake for testing."""
         import random
-        
         # Example violation data
         example_violations = [
             {
-                "area": "KP1, Production Line A",
-                "section": "Assembly Station 3",
-                "violation": "员工未佩戴安全帽",
-                "image": "https://example.com/safety_helmet_violation.jpg"
+                "area": "KP2,Jabar,Indonesia",
+                "section": "Fumigasi Barang Shower Kandang",
+                "violation": "Shoes are not on the shoe rack​ (ENG) / Sepatu tidak diletakkan di rak sepatu(BAHASA INDO)",
+                "image": "https://files.catbox.moe/vvx882.mp4"
             },
-            {
-                "area": "KP2, Warehouse B", 
-                "section": "Loading Dock",
-                "violation": "叉车违规操作",
-                "image": "https://example.com/forklift_violation.jpg"
-            },
-            {
-                "area": "KP3, Quality Control",
-                "section": "Inspection Area",
-                "violation": "工作区域未清洁",
-                "image": "https://example.com/cleanliness_violation.jpg"
-            }
+            # {
+            #     "area": "KP2, Warehouse B",
+            #     "section": "Loading Dock",
+            #     "violation": "叉车违规操作",
+            #     "image": "https://files.catbox.moe/2hf0ji.mp4"
+            # },
+            # {
+            #     "area": "KP3, Quality Control",
+            #     "section": "Inspection Area",
+            #     "violation": "工作区域未清洁",
+            #     "image": "https://ohiomagazine.imgix.net/sitefinity/images/default-source/articles/2021/july-august-2021/farms-slate-run-farm-sheep-credit-megan-leigh-barnard.jpg?sfvrsn=59d8a238_8&w=960&auto=compress%2Cformat"
+            # }
         ]
-        
-        # Select random example
         violation_data = random.choice(example_violations)
-        
-        # Create timestamp
         now = datetime.now()
         timestamp_str = now.strftime("%m/%d/%y %I:%M %p")
-        
-        # Prepare CSV row
-        new_row = [
-            timestamp_str,
-            violation_data["area"],
-            violation_data["section"],
-            violation_data["violation"],
-            violation_data["image"],
-            "false",
-            "false"  # confirmed column
-        ]
-        
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
         try:
-            # Append to CSV file
-            with open(self.file_path, 'a', encoding='utf-8', newline='') as file:
-                writer = csv.writer(file)
-                writer.writerow(new_row)
-            
-            # Create ViolationRecord object
-            record = ViolationRecord(
-                timestamp=now,
+            cs.execute(
+                f"""INSERT INTO {TABLE_NAME}
+                (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY)
+                VALUES (%s, %s, %s, %s, %s, %s)""",
+                (
+                    timestamp_str,
+                    violation_data["area"],
+                    violation_data["section"],
+                    violation_data["violation"],
+                    violation_data["image"],
+                    "false"
+                )
+            )
+            conn.commit()
+            return ViolationRecord(
+                timestamp=timestamp_str,
                 factory_area=violation_data["area"],
                 inspection_section=violation_data["section"],
                 violation_type=violation_data["violation"],
                 image_url=violation_data["image"],
                 resolved=False,
-                confirmed=False,
-                row_index=-1  # Will be set when re-parsed
+                row_index=-1
             )
-            
-            return record
-            
         except Exception as e:
-            print(f"Error adding example violation: {e}")
-            return None
+            print(f"Error adding example violation to Snowflake: {e}")
+            return ViolationRecord(
+                timestamp=timestamp_str,
+                factory_area="Error",
+                inspection_section="Error",
+                violation_type="Failed to add violation",
+                image_url="",
+                resolved=False,
+                row_index=-1
+            )
+        finally:
+            cs.close()
+            conn.close()
 
-# Usage example:
-# parser = DataParser()
-# records = parser.parse()
-# for record in records:
-#     print(f"Time: {record.timestamp}, Area: {record.factory_area}, Violation: {record.violation_type}")
+    def add_chat_id(self, chat_id: str) -> bool:
+        """Add a WhatsApp chat ID (numeric phone) to Snowflake for notifications."""
+        if not isinstance(chat_id, str) or not chat_id.isdigit() or not (8 <= len(chat_id) <= 15):
+            return False
+
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        try:
+            # Check if chat_id already exists
+            cs.execute(f"SELECT COUNT(*) FROM {CHAT_IDS_TABLE} WHERE CHAT_ID = %s", (chat_id,))
+            row = cs.fetchone()
+            if row and row[0] > 0:
+                return False  # Already exists
+
+            # Insert new chat_id
+            cs.execute(
+                f"INSERT INTO {CHAT_IDS_TABLE} (CHAT_ID, CREATED_AT, ACTIVE) VALUES (%s, %s, %s)",
+                (chat_id, datetime.now().isoformat(), True)
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error adding chat ID to Snowflake: {e}")
+            return False
+        finally:
+            cs.close()
+            conn.close()
+
+    def get_active_chat_ids(self) -> List[str]:
+        """Get all active chat IDs from Snowflake."""
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        chat_ids = []
+        try:
+            cs.execute(f"SELECT CHAT_ID FROM {CHAT_IDS_TABLE} WHERE ACTIVE = true")
+            rows = cs.fetchall()
+            chat_ids = [row[0] for row in rows]
+        except Exception as e:
+            print(f"Error fetching chat IDs from Snowflake: {e}")
+        finally:
+            cs.close()
+            conn.close()
+        return chat_ids
+
+    def remove_chat_id(self, chat_id: str) -> bool:
+        """Remove a WhatsApp chat ID from Snowflake (set as inactive)."""
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        try:
+            cs.execute(
+                f"UPDATE {CHAT_IDS_TABLE} SET ACTIVE = false WHERE CHAT_ID = %s",
+                (chat_id,)
+            )
+            conn.commit()
+            rc = getattr(cs, 'rowcount', 0) or 0
+            return rc > 0
+        except Exception as e:
+            print(f"Error removing chat ID from Snowflake: {e}")
+            return False
+        finally:
+            cs.close()
+            conn.close()
+
+    def create_chat_ids_table(self):
+        """Create the WhatsApp chat IDs table if it doesn't exist."""
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        try:
+            cs.execute(f"""
+                CREATE TABLE IF NOT EXISTS {CHAT_IDS_TABLE} (
+                    CHAT_ID VARCHAR(255) PRIMARY KEY,
+                    CREATED_AT TIMESTAMP,
+                    ACTIVE BOOLEAN DEFAULT TRUE
+                )
+            """)
+            conn.commit()
+            print(f"Table {CHAT_IDS_TABLE} created or already exists.")
+        except Exception as e:
+            print(f"Error creating chat IDs table: {e}")
+        finally:
+            cs.close()
+            conn.close()

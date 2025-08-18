@@ -1,133 +1,190 @@
 from data import DataParser
 import logging
 import os
-import asyncio
-from datetime import datetime
-from telegram import ForceReply, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
-from telegram.constants import ParseMode
-from dotenv import load_dotenv
-from telegram import constants
-load_dotenv("../.env")
-token = os.getenv("TELEGRAM_API_KEY")
-if token == None:
-    print("no token!!")
-    exit()
 
-# Enable logging
+from dotenv import load_dotenv
+import threading
+import time
+from typing import Any, Optional
+from flask import Flask
+
+# WhatsApp via pywa (Cloud API)
+try:
+    from pywa import WhatsApp  # type: ignore
+except Exception:  # pywa might not be installed in all environments
+    WhatsApp = None  # type: ignore
+
+load_dotenv()
+
+WA_PHONE_ID = os.getenv("WA_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID") or "775233089000345"
+WA_TOKEN = os.getenv("WA_TOKEN") or os.getenv("WHATSAPP_TOKEN") or "EAAKlsRsZCkqgBPPP7iU5NebzJIJGydLAoBEUH3e0CY27sZB2k1atuMC9eIeVMDbj7fDKXF4NTfkA6DcWGZAasDkfsRzF5LkkRFkuU2CKRnSeR4v4Dfi9KkGnI5PYDpwifbpO9wGv1YuinGyGvVMdbVMHcpGAisncsZCnXkZBHOqLZCI77jtVKZCZATsPQ1CZAtH9E2wZDZD"
+
+STREAMLIT_URL = "https://hrtowii-fyp-proj-japfa-cctvstreamlit-app-nt7gbx.streamlit.app/"
+
+wa = None
+if WhatsApp is not None and WA_PHONE_ID and WA_TOKEN:
+    wa = WhatsApp(
+        phone_id=WA_PHONE_ID,
+        token=WA_TOKEN,
+    )
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+
 class ViolationMonitor:
-    """Global monitoring system for CCTV violations"""
+    """Global monitoring system for CCTV violations using WhatsApp"""
+
+    # Thread handle (set in __init__)
+    monitoring_thread: Optional[threading.Thread]
 
     def __init__(self):
         self.parser = DataParser()
         self.last_record_count = 0
         self.monitoring_active = False
-        self.monitoring_task = None
+        self.monitoring_thread = None
         self.active_chat_ids = set()
-        self.application = None
+        # Load chat IDs from Snowflake on initialization
+        self._load_chat_ids_from_snowflake()
+        # pywa WhatsApp client instance
+        self.bot = None
+        self.sync_cycle_counter = 0  # Counter for periodic chat ID sync
 
-    def initialize(self, application):
-        """Initialize the monitor with the Telegram application"""
-        self.application = application
+    def initialize(self, bot_instance):
+        """Initialize the monitor with the WhatsApp bot"""
+        self.bot = bot_instance
         records = self.parser.parse()
         self.last_record_count = len(records)
-        logger.info(f"Monitor initialized with {self.last_record_count} existing records")
+        logger.info(
+            f"Monitor initialized with {self.last_record_count} existing records"
+        )
 
-    async def send_new_violation_alert(self, record, chat_id):
-        """Send alert for new violation to specific chat"""
-        if not record.resolved and not record.confirmed:  # Only send alerts for unresolved and unconfirmed violations
-            # Create case-specific Streamlit app link
-            case_url = f"http://100.77.181.25:8501/?case_id={record.row_index}"
+    def _load_chat_ids_from_snowflake(self):
+        """Load active chat IDs from Snowflake database"""
+        try:
+            chat_ids = self.parser.get_active_chat_ids()
+            self.active_chat_ids = set(chat_ids)
+            logger.info(f"Loaded {len(chat_ids)} active chat IDs from Snowflake")
+        except Exception as e:
+            logger.error(f"Failed to load chat IDs from Snowflake: {e}")
+            # Fallback to default chat IDs if Snowflake fails
+            self.active_chat_ids = {"6581899220", "6597607916"}
+            logger.info("Using fallback default chat IDs")
 
-            violation_text = (f"🚨 NEW VIOLATION DETECTED\n\n"
-                             f"🆔 Case ID: {record.row_index}\n"
-                             f"⏰ Time: {record.timestamp}\n"
-                             f"🏭 Area: {record.factory_area}\n"
-                             f"🔍 Section: {record.inspection_section}\n"
-                             f"⚠️ Violation: {record.violation_type}\n\n"
-                             f"🔗 Review Case: {case_url}\n"
-                             f"📋 Action Required: Click the buttons below or the link above to review this violation.")
+    def sync_chat_ids(self):
+        """Synchronize chat IDs with Snowflake database"""
+        try:
+            fresh_chat_ids = set(self.parser.get_active_chat_ids())
+            if fresh_chat_ids != self.active_chat_ids:
+                old_count = len(self.active_chat_ids)
+                self.active_chat_ids = fresh_chat_ids
+                new_count = len(self.active_chat_ids)
+                logger.info(f"Synchronized chat IDs: {old_count} -> {new_count} active subscribers")
+        except Exception as e:
+            logger.error(f"Failed to sync chat IDs from Snowflake: {e}")
 
-            # Create inline keyboard
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Mark as Resolved", callback_data=f"resolve_{record.row_index}"),
-                    InlineKeyboardButton("👁️ Confirm Violation", callback_data=f"confirm_{record.row_index}")
-                ],
-                [InlineKeyboardButton("🔗 Open in Web App", url=case_url)]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+    def send_new_violation_alert(self, record, chat_id):
+        """Send alert for new violation to specific WhatsApp chat"""
+        print(record)
+        case_url = f"{STREAMLIT_URL}/?case_id={record.row_index}"
 
-            try:
-                # Send image with caption if available, otherwise send text message
-                if hasattr(record, 'image_url') and record.image_url:
-                    await self.application.bot.send_photo(
-                        chat_id=chat_id,
-                        photo=record.image_url,
+        violation_text = (
+            f"🚨 NEW VIOLATION DETECTED\n\n"
+            f"🆔 Case ID: {record.row_index}\n"
+            f"⏰ Time: {record.timestamp}\n"
+            f"🏭 Area: {record.factory_area}\n"
+            f"🔍 Section: {record.inspection_section}\n"
+            f"⚠️ Violation: {record.violation_type}\n\n"
+            f"🔗 Review Case: {case_url}\n\n"
+            # f"📋 Action Required: Reply with commands below:\n"
+            # f"• Type 'resolve {record.row_index}' to mark as resolved\n"
+            # f"• Type 'status' to view current statistics"
+        )
+
+        if self.bot is None:
+            logger.error("WhatsApp client is not initialized")
+            return
+
+        # Ensure numeric phone number (E.164 without '+')
+        to_number = str(chat_id)
+
+        try:
+            # Try sending image by URL with caption if available, otherwise send text message
+            if hasattr(record, "image_url") and record.image_url:
+                try:
+                    # pywa supports send_image with a link
+                    self.bot.send_image(
+                        to=to_number,
+                        image=record.image_url,
                         caption=violation_text,
-                        reply_markup=reply_markup
                     )
-                else:
-                    await self.application.bot.send_message(
-                        chat_id=chat_id,
-                        text=violation_text,
-                        reply_markup=reply_markup
-                    )
-            except Exception as e:
-                    logger.error(f"Failed to send violation alert: {e}")
-                    # Fallback: try to send just the text message if image fails
-                    try:
-                        await self.application.bot.send_message(
-                            chat_id=chat_id,
-                            text=violation_text,
-                            reply_markup=reply_markup
-                        )
-                    except Exception as fallback_error:
-                        logger.error(f"Failed to send fallback message: {fallback_error}")
-
-    async def monitor_csv_file(self):
-        """Monitor CSV file for new records"""
+                except AttributeError:
+                    # Fallback if send_image is unavailable in installed pywa version
+                    fallback_text = f"{violation_text}\n🖼️ Image: {record.image_url}"
+                    self.bot.send_message(to=to_number, text=fallback_text)
+            else:
+                self.bot.send_message(to=to_number, text=violation_text)
+        except Exception as e:
+            print(f"Failed to send violation alert: {e}")
+            # Fallback: try to send just the text message
+            try:
+                self.bot.send_message(to=to_number, text=violation_text)
+            except Exception as fallback_error:
+                print(f"Failed to send fallback message: {fallback_error}")
+    def monitor_sql_db(self):
         while self.monitoring_active:
             try:
-                # Create a fresh parser instance to avoid data conflicts
+                # Periodic chat ID sync (every 12 cycles = 1 minute)
+                self.sync_cycle_counter += 1
+                if self.sync_cycle_counter >= 12:
+                    self.sync_chat_ids()
+                    self.sync_cycle_counter = 0
+
                 temp_parser = DataParser()
                 current_records = temp_parser.parse()
                 current_count = len(current_records)
 
-                logger.info(f"Monitoring: Found {current_count} total records, last count was {self.last_record_count}")
+                logger.info(
+                    f"Monitoring: Found {current_count} total records, last count was {self.last_record_count}"
+                )
 
                 if current_count > self.last_record_count:
-                    # New records detected
-                    new_records = current_records[self.last_record_count:]
+                    new_records = current_records[self.last_record_count :]
                     logger.info(f"Detected {len(new_records)} new violation(s)")
 
                     # Send notifications to all active chat IDs
                     for record in new_records:
                         for chat_id in self.active_chat_ids:
                             try:
-                                await self.send_new_violation_alert(record, chat_id)
+                                print("meow")
+                                self.send_new_violation_alert(record, chat_id)
                             except Exception as e:
-                                logger.error(f"Failed to send notification to chat {chat_id}: {e}")
+                                logger.error(
+                                    f"Failed to send notification to chat {chat_id}: {e}"
+                                )
 
                     self.last_record_count = current_count
 
-                    # Update the global parser's records to keep it in sync
                     self.parser.records = current_records
 
-                await asyncio.sleep(1)  # Check every 5 seconds
+                time.sleep(5)  # Check every 5 seconds
 
             except Exception as e:
-                logger.error(f"Error monitoring CSV file: {e}")
-                await asyncio.sleep(1)
+                logger.error(f"Error monitoring sql db: {e}")
+                time.sleep(5)
 
     def start_monitoring(self, chat_id):
-        """Start monitoring system for a specific chat"""
+        """Register a chat for monitoring notifications. Only main() starts the monitoring thread."""
+        # Add to Snowflake and local set
+        if chat_id != "system":
+            success = self.parser.add_chat_id(chat_id)
+            if success:
+                logger.info(f"Added chat ID {chat_id} to Snowflake")
+            else:
+                logger.info(f"Chat ID {chat_id} already exists in Snowflake")
+
         self.active_chat_ids.add(chat_id)
 
         if not self.monitoring_active:
@@ -139,48 +196,57 @@ class ViolationMonitor:
             # Update global parser
             self.parser.records = records
 
-            # Start monitoring - ensure only one task exists
-            if self.monitoring_task is not None:
-                self.monitoring_task.cancel()
-
+            # Do NOT start a new thread here; only main() does that.
             self.monitoring_active = True
-            self.monitoring_task = asyncio.create_task(self.monitor_csv_file())
-            logger.info("Global monitoring system started")
-            return True  # Indicate new monitoring started
+            logger.info("Global monitoring system marked active (thread started in main)")
+            # Only send notification if chat_id is not 'system'
+            if self.bot is not None and chat_id != "system":
+                try:
+                    to_number = str(chat_id)
+                    self.bot.send_message(
+                        to=to_number,
+                        text="Now monitoring sql db for new violations."
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send monitoring started message: {e}")
+            return True
         else:
             logger.info(f"Chat {chat_id} added to existing monitoring system")
-            return False  # Indicate monitoring was already active
+            return False
 
     def stop_monitoring(self, chat_id):
         """Stop monitoring for a specific chat, or globally if no more chats"""
+        # Remove from Snowflake and local set
+        if chat_id != "system":
+            success = self.parser.remove_chat_id(chat_id)
+            if success:
+                logger.info(f"Removed chat ID {chat_id} from Snowflake")
+
         self.active_chat_ids.discard(chat_id)
 
         # If no more active chats, stop monitoring completely
         if not self.active_chat_ids:
             self.monitoring_active = False
-            if self.monitoring_task:
-                self.monitoring_task.cancel()
-                self.monitoring_task = None
+            self.monitoring_thread = None
             logger.info("Global monitoring system stopped")
             return True  # Indicate global stop
         return False  # Indicate only chat-specific stop
 
     def get_status(self):
         """Get current monitoring status"""
-        # Refresh data from CSV
         temp_parser = DataParser()
         records = temp_parser.parse()
         unresolved = [record for record in records if not record.resolved]
-        unconfirmed = [record for record in records if not record.confirmed]
 
         return {
-            'total_violations': len(records),
-            'unresolved': len(unresolved),
-            'unconfirmed': len(unconfirmed),
-            'resolved': len(records) - len(unresolved),
-            'resolution_rate': ((len(records) - len(unresolved)) / len(records) * 100) if records else 0,
-            'monitoring_active': self.monitoring_active,
-            'active_subscribers': len(self.active_chat_ids)
+            "total_violations": len(records),
+            "unresolved": len(unresolved),
+            "resolved": len(records) - len(unresolved),
+            "resolution_rate": ((len(records) - len(unresolved)) / len(records) * 100)
+            if records
+            else 0,
+            "monitoring_active": self.monitoring_active,
+            "active_subscribers": len(self.active_chat_ids),
         }
 
     def add_demo_violation(self):
@@ -192,287 +258,262 @@ class ViolationMonitor:
         return self.parser.get_unresolved_records()
 
     def update_resolved_status(self, row_index, resolved=True):
-        """Update resolved status of a violation"""
+        """Update resolved status of a violation record"""
         return self.parser.update_resolved_status(row_index, resolved)
 
-    def get_unconfirmed_records(self):
-        """Get all unconfirmed violation records"""
-        return self.parser.get_unconfirmed_records()
+def add_chat_id(chat_id: str) -> bool:
+    """
+    Add a WhatsApp chat_id to Snowflake and active_chat_ids set for notifications.
+    Returns True if added, False if already present.
+    """
+    # Accept only digits (country code + number), 8 to 15 digits
+    if not isinstance(chat_id, str) or not chat_id.isdigit() or not (8 <= len(chat_id) <= 15):
+        return False
 
-    def update_confirmed_status(self, row_index, confirmed=True):
-        """Update confirmed status of a violation"""
-        return self.parser.update_confirmed_status(row_index, confirmed)
+    # Add to Snowflake first
+    success = monitor.parser.add_chat_id(chat_id)
+    if success:
+        # Add to local set if successfully added to Snowflake
+        monitor.active_chat_ids.add(chat_id)
+        logger.info(f"Added new chat_id to notifications: {chat_id}")
+        return True
+    else:
+        # Check if it already exists in local set
+        if chat_id in monitor.active_chat_ids:
+            return False
+        else:
+            # If not in local set but failed to add to Snowflake,
+            # it might already exist in Snowflake, so add to local set
+            monitor.active_chat_ids.add(chat_id)
+            logger.info(f"Added existing chat_id to local notifications: {chat_id}")
+            return False  # Return False to indicate it wasn't newly added
+
 
 # Global monitor instance
 monitor = ViolationMonitor()
-application = None
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle button callbacks for marking violations as resolved"""
-    query = update.callback_query
-    await query.answer()
 
-    if query.data.startswith("resolve_"):
-        case_id = int(query.data.split("_")[1])
-        # Update the violation status in the CSV
-        success = monitor.update_resolved_status(case_id, True)
+# WhatsApp message handlers
+# @bot.router.message(type_message=filters.TEXT_TYPES)
+# def message_handler(notification: Notification) -> None:
+#     """Handle all incoming WhatsApp messages"""
+#     text = (notification.message_text.strip().lower() if notification.message_text else "")
+#     chat_id = notification.chat
 
-        if success:
-            await query.edit_message_text(
-                text=f"✅ Case ID {case_id} has been marked as RESOLVED.\n\n"
-                     f"🔗 View updated case: http://100.77.181.25:8501/?case_id={case_id}"
-            )
-        else:
-            await query.edit_message_text(
-                text=f"❌ Failed to resolve Case ID {case_id}. Please try again or resolve manually in the web interface."
-            )
-    elif query.data.startswith("confirm_"):
-        case_id = int(query.data.split("_")[1])
-        # Update the confirmation status in the CSV
-        success = monitor.update_confirmed_status(case_id, True)
+#     # Auto-subscribe every user who sends any message
+#     if chat_id not in monitor.active_chat_ids:
+#         monitor.active_chat_ids.add(chat_id)
+#         # Optionally, send a message to notify user of auto-subscription
+#         try:
+#             notification.answer(
+#                 "🔔 You have been automatically subscribed to CCTV violation monitoring notifications."
+#             )
+#         except Exception as e:
+#             logger.error(f"Failed to send auto-subscribe message: {e}")
 
-        if success:
-            # Handle case where message might have an image (photo) instead of just text
-            try:
-                await query.edit_message_text(
-                    text=f"✅ Case ID {case_id} has been CONFIRMED.\n\n"
-                         f"🔗 View updated case: http://100.77.181.25:8501/?case_id={case_id}"
-                )
-            except Exception as e:
-                # If editing text fails (e.g., message has photo), edit caption instead
-                try:
-                    await query.edit_message_caption(
-                        caption=f"✅ Case ID {case_id} has been CONFIRMED.\n\n"
-                               f"🔗 View updated case: http://100.77.181.25:8501/?case_id={case_id}"
-                    )
-                except Exception as caption_error:
-                    # If both fail, send a new message
-                    await query.message.reply_text(
-                        f"✅ Case ID {case_id} has been CONFIRMED.\n\n"
-                        f"🔗 View updated case: http://100.77.181.25:8501/?case_id={case_id}"
-                    )
-        else:
-            await query.edit_message_text(
-                text=f"❌ Failed to confirm Case ID {case_id}. Please try again or confirm manually in the web interface."
-            )
+#     # Handle monitoring commands
+#     if text == "/start" or text == "start":
+#         start_command(notification)
+#         return
+#     elif text == "/status" or text == "status":
+#         status_command(notification)
+#         return
+#     elif text == "/monitor" or text == "monitor":
+#         start_monitoring_command(notification)
+#         return
+#     elif text == "/stop" or text == "stop":
+#         stop_monitoring_command(notification)
+#         return
+#     elif text == "/demo" or text == "demo":
+#         demo_command(notification)
+#         return
+#     elif text == "/help" or text == "help":
+#         help_command(notification)
+#         return
+#     elif text.startswith("resolve "):
+#         handle_resolve_command(notification)
+#         return
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a message when the command /start is issued and initialize monitoring."""
-    user = update.effective_user
-    chat_id = update.effective_chat.id
+#     else:
+#         # Unknown command - show help
+#         help_command(notification)
+
+
+def start_command(notification: Any) -> None:
+    """Handle /start command for WhatsApp"""
+    chat_id = notification.chat
 
     # Check if monitoring is already active and if this chat is already subscribed
     if monitor.monitoring_active and chat_id in monitor.active_chat_ids:
-        await update.message.reply_text(
-            f"Hi {user.first_name}! 🚨 CCTV Violation Monitoring Bot is already active for this chat.",
-            reply_markup=ForceReply(selective=True),
+        notification.answer(
+            "Hi! 🚨 CCTV Violation Monitoring Bot is already active for this chat."
         )
     else:
         # Initialize monitoring system when /start is called
         monitoring_started = monitor.start_monitoring(chat_id)
 
         if monitoring_started:
-            initialization_msg = "\n🔔 MONITORING SYSTEM INITIALIZED"
+            initialization_msg = "🔔 MONITORING SYSTEM INITIALIZED"
         else:
-            initialization_msg = "\n📱 NOTIFICATIONS ENABLED FOR THIS CHAT"
+            initialization_msg = "📱 NOTIFICATIONS ENABLED FOR THIS CHAT"
 
-        await update.message.reply_text(
-            f"Hi {user.first_name}! 🚨 CCTV Violation Monitoring Bot is active.{initialization_msg}",
-            reply_markup=ForceReply(selective=True),
+        notification.answer(
+            f"Hi! 🚨 CCTV Violation Monitoring Bot is active.\n\n{initialization_msg}"
         )
 
     # Show current unresolved violations
     records = monitor.get_unresolved_records()
-    unconfirmed = monitor.get_unconfirmed_records()
 
     if records:
-        await update.message.reply_text(f"📋 Current unresolved violations: {len(records)}")
-        for record in records[:5]:  # Show max 5 records
-            await send_violation_message(update, record)
+        notification.answer(f"📋 Current unresolved violations: {len(records)}")
+        for record in records[:3]:  # Show max 3 records
+            send_violation_message(notification, record)
     else:
-        await update.message.reply_text("✅ No unresolved violations at the moment.")
+        notification.answer("✅ No unresolved violations at the moment.")
 
-        if len(unconfirmed) > 0:
-            unconfirmed_links = []
-            for record in unconfirmed[:3]:  # Show max 3 direct links
-                case_url = f"http://100.77.181.25:8501/?case_id={record.row_index}"
-                unconfirmed_links.append(f"• Case {record.row_index} - {record.violation_type}: {case_url}")
 
-            links_text = "\n".join(unconfirmed_links)
-            if len(unconfirmed) > 3:
-                links_text += f"\n• ... and {len(unconfirmed) - 3} more cases"
-
-            await update.message.reply_text(f"⚠️ Unconfirmed violations require your attention:\n{links_text}")
-
-    # await update.message.reply_text(
-    #     "🚨 CCTV Violation Monitoring Bot\\n\\n"
-    #     "Commands:\\n"
-    #     "/start - View current unresolved violations\\n"
-    #     "/status - View violation statistics & monitoring status\\n"
-    #     "/monitor - Start real-time CSV monitoring\\n"
-    #     "/stop - Stop monitoring system\\n"
-    #     "/demo - Test notification system with example\\n"
-    #     "/help - Show this help message\\n\\n"
-    #     "Features:\\n"
-    #     "• Real-time monitoring of new violations\\n"
-    #     "• Case-specific web links for direct navigation\\n"
-    #     "• Mark violations as resolved with one click\\n"
-    #     "• Automatic CSV file updates\\n"
-    #     "• Demo mode for testing functionality\\n\\n"
-    #     "🔗 Direct Case Access:\\n"
-    #     "Each violation notification includes a direct link to view and manage that specific case in the web interface.",
-    #     parse_mode=constants.ParseMode.MARKDOWN_V2
-    # )
-
-async def send_violation_message(update, record):
+def send_violation_message(notification, record):
     """Send a violation message with case-specific Streamlit link"""
     # Create case-specific Streamlit app link
-    case_url = f"http://100.77.181.25:8501/?case_id={record.row_index}"
-    status_text = '✅ Confirmed' if record.confirmed else '⚠️ Pending Confirmation'
+    case_url = f"{STREAMLIT_URL}/?case_id={record.row_index}"
+    status_text = "✅ Resolved" if record.resolved else "❌ Unresolved"
 
-    violation_text = (f"🆔 Case ID: {record.row_index}\n"
-                     f"⏰ Time: {record.timestamp}\n"
-                     f"🏭 Area: {record.factory_area}\n"
-                     f"🔍 Section: {record.inspection_section}\n"
-                     f"⚠️ Violation: {record.violation_type}\n"
-                     f"📋 Status: {status_text}\n"
-                     f"🔗 Review Case: {case_url}")
-
-    # Create inline keyboard for unresolved violations
-    keyboard = []
-    if not record.resolved:
-        keyboard.append([
-            InlineKeyboardButton("✅ Mark as Resolved", callback_data=f"resolve_{record.row_index}")
-        ])
-    if not record.confirmed:
-        keyboard.append([
-            InlineKeyboardButton("👁️ Confirm Violation", callback_data=f"confirm_{record.row_index}")
-        ])
-    keyboard.append([InlineKeyboardButton("🔗 Open in Web App", url=case_url)])
-
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-
-    try:
-        # Send image with caption if available, otherwise send text message
-        if hasattr(record, 'image_url') and record.image_url:
-            await update.message.reply_photo(
-                photo=record.image_url,
-                caption=violation_text,
-                reply_markup=reply_markup
-            )
-        else:
-            await update.message.reply_text(
-                violation_text,
-                reply_markup=reply_markup
-            )
-    except Exception as e:
-        logger.error(f"Failed to send violation message: {e}")
-        # Fallback: try to send plain text message
-        try:
-            await update.message.reply_text(violation_text)
-        except Exception as fallback_error:
-            logger.error(f"Failed to send fallback violation message: {fallback_error}")
-
-
-
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show current violation status"""
-    status = monitor.get_status()
-    chat_id = update.effective_chat.id
-    is_subscribed = chat_id in monitor.active_chat_ids
-
-    await update.message.reply_text(
-        "🚨 CCTV Violation Monitoring Bot\n\n"
-        "Commands:\n"
-        "/start - View current unresolved violations\n"
-        "/status - View violation statistics & monitoring status\n"
-        "/monitor - Start real-time CSV monitoring\n"
-        "/stop - Stop monitoring system\n"
-        "/demo - Test notification system with example\n"
-        "/help - Show this help message\n\n"
-        "Features:\n"
-        "• Real-time monitoring of new violations\n"
-        "• Case-specific web links for direct navigation\n"
-        "• Web-based violation management interface\n"
-        "• Automatic CSV file updates\n"
-        "• Demo mode for testing functionality\n\n"
-        "🔗 Web Interface: http://100.77.181.25:8501\n"
-        "Each violation includes a direct link to view that specific case."
+    violation_text = (
+        f"🆔 Case ID: {record.row_index}\n"
+        f"⏰ Time: {record.timestamp}\n"
+        f"🏭 Area: {record.factory_area}\n"
+        f"🔍 Section: {record.inspection_section}\n"
+        f"⚠️ Violation: {record.violation_type}\n"
+        f"📋 Status: {status_text}\n"
+        f"🔗 Review Case: {case_url}\n\n"
+        f"Reply with: 'resolve {record.row_index}' to mark as resolved"
     )
 
-async def start_monitoring_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Start the CSV monitoring system"""
-    chat_id = update.effective_chat.id
+    # Send the violation message
+    # Note: Incoming message handling is disabled in this build; this function is kept for reference.
+    try:
+        notification.answer(violation_text)
+    except Exception:
+        pass
+
+
+def status_command(notification: Any) -> None:
+    """Show current violation status"""
+    status = monitor.get_status()
+    chat_id = notification.chat
+    is_subscribed = chat_id in monitor.active_chat_ids
+
+    status_text = (
+        f"📊 **VIOLATION MONITORING STATUS**\n\n"
+        f"🚨 Total Violations: {status['total_violations']}\n"
+        f"⚠️ Unresolved: {status['unresolved']}\n"
+        f"✅ Resolved: {status['resolved']}\n"
+        f"📈 Resolution Rate: {status['resolution_rate']:.1f}%\n\n"
+        f"🔔 Monitoring: {'Active' if status['monitoring_active'] else 'Inactive'}\n"
+        f"📱 Active Subscribers: {status['active_subscribers']}\n"
+        f"💬 This Chat: {'Subscribed' if is_subscribed else 'Not Subscribed'}\n\n"
+        f"🔗 Web Interface: {STREAMLIT_URL}\n\n"
+        f"Type 'help' for available commands."
+    )
+
+    try:
+        notification.answer(status_text)
+    except Exception:
+        pass
+
+
+def start_monitoring_command(notification: Any) -> None:
+    """Register this chat for monitoring notifications (does not start a new monitoring thread)"""
+    chat_id = notification.chat
 
     if monitor.monitoring_active and chat_id in monitor.active_chat_ids:
-        await update.message.reply_text("🔔 Monitoring system is already active for this chat!")
+        notification.answer("🔔 Monitoring system is already active for this chat!")
         return
 
-    # Start monitoring for this chat
+    # Register this chat for notifications
     monitoring_started = monitor.start_monitoring(chat_id)
 
     if monitoring_started:
-        await update.message.reply_text(
+        try:
+            notification.answer(
             "🔔 **MONITORING SYSTEM STARTED**\n\n"
-            "✅ Now monitoring CSV file for new violations\n"
+            "✅ Now monitoring SQL db for new violations\n"
             "📊 Real-time notifications enabled for this chat\n"
             "⏱️ Checking every 5 seconds\n\n"
             f"📈 Currently tracking {monitor.last_record_count} existing records\n"
-            "Use /demo to test with example violation!"
+            "Use 'demo' to test with example violation!"
         )
+        except Exception:
+            pass
     else:
-        await update.message.reply_text(
+        try:
+            notification.answer(
             "🔔 **NOTIFICATIONS ENABLED**\n\n"
             "✅ Added this chat to existing monitoring system\n"
             "📊 Real-time notifications enabled for this chat\n"
             "⏱️ Monitoring already active every 5 seconds\n\n"
             f"📈 Currently tracking {monitor.last_record_count} existing records\n"
-            "Use /demo to test with example violation!"
+            "Use 'demo' to test with example violation!"
         )
+        except Exception:
+            pass
 
-async def stop_monitoring_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Stop the CSV monitoring system"""
-    chat_id = update.effective_chat.id
+
+def stop_monitoring_command(notification: Any) -> None:
+    chat_id = notification.chat
 
     if not monitor.monitoring_active or chat_id not in monitor.active_chat_ids:
-        await update.message.reply_text("🔕 Monitoring system is not active for this chat!")
+        notification.answer("🔕 Monitoring system is not active for this chat!")
         return
 
     # Stop monitoring for this chat
     global_stopped = monitor.stop_monitoring(chat_id)
 
     if global_stopped:
-        await update.message.reply_text(
+        try:
+            notification.answer(
             "🔕 **MONITORING SYSTEM STOPPED**\n\n"
-            "❌ CSV monitoring disabled globally\n"
+            "❌ SQL monitoring disabled globally\n"
             "📵 All real-time notifications paused"
         )
+        except Exception:
+            pass
     else:
-        await update.message.reply_text(
+        try:
+            notification.answer(
             "🔕 **NOTIFICATIONS DISABLED**\n\n"
             "❌ This chat will no longer receive notifications\n"
             f"📊 Monitoring continues for {len(monitor.active_chat_ids)} other chat(s)"
         )
+        except Exception:
+            pass
 
-async def demo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+def demo_command(notification: Any) -> None:
     """Demo the notification system with example violation"""
-    chat_id = update.effective_chat.id
+    chat_id = notification.chat
 
-    await update.message.reply_text(
+    try:
+        notification.answer(
         "🚀 **STARTING DEMO**\n\n"
-        "1️⃣ Adding example violation to CSV...\n"
+        "1️⃣ Adding example violation to SQL...\n"
         "2️⃣ Will send notification in 3 seconds...\n"
-        "3️⃣ You can then test the resolve button!"
+        "3️⃣ You can then test the resolve command!"
     )
+    except Exception:
+        pass
 
     # Add example violation using monitor
     example_record = monitor.add_demo_violation()
 
     if example_record:
-        await update.message.reply_text("✅ Example violation added to CSV!")
+        try:
+            notification.answer("✅ Example violation added to SQL!")
+        except Exception:
+            pass
 
         # Wait a moment then send notification
-        await asyncio.sleep(3)
+        time.sleep(3)
 
         # Re-parse to get the correct row_index
         monitor.parser.records = []
@@ -481,116 +522,140 @@ async def demo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Find the newly added record (should be the last one)
         if updated_records:
             new_record = updated_records[-1]
-            await monitor.send_new_violation_alert(new_record, chat_id)
+            monitor.send_new_violation_alert(new_record, chat_id)
 
-            await update.message.reply_text(
+            try:
+                notification.answer(
                 "🎯 **DEMO COMPLETE!**\n\n"
                 "✅ Violation notification sent above\n"
-                "🔘 Click 'Mark as Resolved ✅' to test resolution\n"
-                "📊 Use /status to check updated statistics"
+                "📝 Type 'resolve [case_id]' to test resolution\n"
+                "📊 Type 'status' to check updated statistics"
             )
+            except Exception:
+                pass
         else:
-            await update.message.reply_text("❌ Failed to retrieve the new record")
+            try:
+                notification.answer("❌ Failed to retrieve the new record")
+            except Exception:
+                pass
     else:
-        await update.message.reply_text("❌ Failed to add example violation")
+        try:
+            notification.answer("❌ Failed to add example violation")
+        except Exception:
+            pass
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def help_command(notification: Any) -> None:
     """Send a message when the command /help is issued."""
-    await update.message.reply_text(
-        "🚨 CCTV Violation Monitoring Bot\n\n"
-        "Commands:\n"
-        "/start - View current unresolved violations\n"
-        "/status - View violation statistics & monitoring status\n"
-        "/monitor - Start real-time CSV monitoring\n"
-        "/stop - Stop monitoring system\n"
-        "/demo - Test notification system with example\n"
-        "/help - Show this help message\n\n"
-        "Features:\n"
-        "• Real-time monitoring of new violations\n"
-        "• Case-specific web links for direct navigation\n"
-        "• Mark violations as resolved with one click\n"
-        "• Automatic CSV file updates\n"
-        "• Demo mode for testing functionality\n\n"
-        "🔗 Direct Case Access:\n"
-        "Each violation notification includes a direct link to view and manage that specific case in the web interface."
-    )
+    help_text = ("🚨 **CCTV Violation Monitoring Bot**\n\n"
+                 "**Available Commands:**\n"
+                 "• `start` - View current unresolved violations\n"
+                 "• `status` - View violation statistics & monitoring status\n"
+                 "• `monitor` - Start real-time SQL monitoring\n"
+                 "• `stop` - Stop monitoring system\n"
+                 "• `demo` - Test notification system with example\n"
+                 "• `help` - Show this help message\n\n"
+                 "**Violation Commands:**\n"
+                 "• `resolve [case_id]` - Mark violation as resolved\n\n"
+                 "**Features:**\n"
+                 "• Real-time monitoring of new violations\n"
+                 "• Case-specific web links for direct navigation\n"
+                 "• Automatic SQL db updates\n"
+                 "• Multiple chat support\n\n"
+                 "🔗 **Web Interface:** " + STREAMLIT_URL + "\n"
+                 "Each violation notification includes a direct link to view and manage that specific case.")
+    try:
+        notification.answer(help_text)
+    except Exception:
+        pass
 
 
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Echo the user message."""
-    await update.message.reply_text(update.message.text)
+def handle_resolve_command(notification: Any) -> None:
+    """Handle resolve command via text"""
+    text = notification.message_text.strip() if notification.message_text else ""
 
+    try:
+        case_id = int(text.split("resolve ")[1])
+        success = monitor.update_resolved_status(case_id, True)
+
+        if success:
+            case_url = f"{STREAMLIT_URL}/?case_id={case_id}"
+            try:
+                notification.answer(
+                f"✅ Case ID {case_id} has been marked as RESOLVED.\n\n"
+                f"🔗 View updated case: {case_url}"
+            )
+            except Exception:
+                pass
+        else:
+            try:
+                notification.answer(
+                f"❌ Failed to resolve Case ID {case_id}. Please try again or resolve manually in the web interface."
+            )
+            except Exception:
+                pass
+    except (IndexError, ValueError):
+        try:
+            notification.answer("❌ Invalid format. Use: resolve [case_id]")
+        except Exception:
+            pass
+
+
+
+
+
+def create_web_app():
+    """Create Flask web app for deployment health check."""
+    app = Flask(__name__)
+
+    @app.route('/')
+    def hello():
+        return "Hello! CCTV Violation Monitoring Bot is running."
+
+    @app.route('/health')
+    def health():
+        return {"status": "healthy", "service": "cctv-violation-monitor"}
+
+    return app
+
+def run_web_server():
+    """Run the Flask web server."""
+    app = create_web_app()
+    port = int(os.environ.get('PORT', 5001))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 def main() -> None:
-    """Start the bot."""
-    global application
+    """Start the WhatsApp bot and web server."""
+    # Initialize monitor with WhatsApp client
+    monitor.initialize(wa)
+    # Start monitoring globally on bot launch (no chat_id needed)
+    # This is the ONLY place the monitoring thread should ever be started!
+    if not monitor.monitoring_active:
+        monitor.monitoring_active = True
+        monitor.monitoring_thread = threading.Thread(
+            target=monitor.monitor_sql_db, daemon=True
+        )
+        if monitor.monitoring_thread is not None:
+            monitor.monitoring_thread.start()
+        logger.info("Global monitoring system started on bot launch")
 
-    application = Application.builder().token(token).build()
-    print("Bot is running! Use /help to see available commands")
+    # Start web server in a separate thread
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    logger.info("Web server started on port 5001")
 
-    # Initialize monitor with application
-    monitor.initialize(application)
+    print("🚨 CCTV Violation Monitoring Bot is running!")
+    print("📱 Send any message to be auto-subscribed to monitoring notifications")
+    print("💬 Send 'help' for available commands")
+    print("🌐 Web server running on port 5001")
 
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("monitor", start_monitoring_command))
-    application.add_handler(CommandHandler("stop", stop_monitoring_command))
-    application.add_handler(CommandHandler("demo", demo_command))
-    application.add_handler(CallbackQueryHandler(button_callback))
-
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Block main thread to keep the process alive since we don't run a message listener here
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
 
 
 if __name__ == "__main__":
     main()
-
-
-# import requests
-# import re
-
-# instance_id = "7105261734"
-# token = "53932e1d9cc54807b89f20ceb89d159de794f9123037431780"
-
-# # Country code mapping and validation regex per country
-# country_data = {
-#     "Singapore (+65)": {"code": "65", "regex": r"^[689]\d{7}$"},
-#     "Malaysia (+60)": {"code": "60", "regex": r"^1[0-9]{8,9}$"},
-#     "Indonesia (+62)": {"code": "62", "regex": r"^8[1-9][0-9]{6,9}$"},
-#     "Philippines (+63)": {"code": "63", "regex": r"^9\d{9}$"},
-#     "Thailand (+66)": {"code": "66", "regex": r"^8\d{8}$|^9\d{8}$"},
-#     "Vietnam (+84)": {"code": "84", "regex": r"^((3[2-9])|(5[6|8|9])|(7[0|6-9])|(8[1-9])|(9[0-9]))\d{7}$"},
-#     "India (+91)": {"code": "91", "regex": r"^[6-9]\d{9}$"},
-#     "Pakistan (+92)": {"code": "92", "regex": r"^3[0-6]\d{8}$"},
-#     "China (+86)": {"code": "86", "regex": r"^1[3-9]\d{9}$"},
-#     "Japan (+81)": {"code": "81", "regex": r"^([789]0)\d{8}$"},
-#     "South Korea (+82)": {"code": "82", "regex": r"^1[0-9]{9}$"},
-#     "Bangladesh (+880)": {"code": "880", "regex": r"^1[3-9]\d{8}$"},
-# }
-
-# selected_country="Singapore (+65)"
-# local_number="81899220"
-# data = country_data[selected_country]
-# full_number = data["code"] + local_number
-# print(full_number)
-# phone_pattern = re.compile(data["regex"])
-
-# message=""""""
-# for record in records:
-#     message += f"Time: {record.timestamp}, Area: {record.factory_area}, Violation: {record.violation_type}\n"
-
-# if not phone_pattern.match(local_number):
-#     print(f"Invalid number format for {selected_country}.")
-# else:
-#     url = f"https://api.green-api.com/waInstance{instance_id}/sendMessage/{token}"
-#     payload = {
-#         "chatId": f"{full_number}@c.us",
-#         "message": message
-#     }
-
-# response = requests.post(url, json=payload)
-# print(response.status_code)
