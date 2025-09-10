@@ -160,7 +160,7 @@ st.sidebar.title("🚨 CCTV Violation Management")
 
 # --- Add Example Violation Button ---
 if st.sidebar.button("➕ Insert Example Violation", help="Add a demo violation row to Snowflake"):
-    example_record = manager.parser.add_example_violation()
+    example_record = manager.parser.add_random_violation_from_db()
     if example_record:
         st.sidebar.success("✅ Example violation inserted into Snowflake!")
     else:

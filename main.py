@@ -251,7 +251,7 @@ class ViolationMonitor:
 
     def add_demo_violation(self):
         """Add demo violation and return the record"""
-        return self.parser.add_example_violation()
+        return self.parser.add_random_violation_from_db()
 
     def get_unresolved_records(self):
         """Get all unresolved violation records"""

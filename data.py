@@ -155,74 +155,141 @@ class DataParser:
             cs.close()
             conn.close()
         return records
-
-    def add_example_violation(self) -> ViolationRecord:
-        """Add an example violation to Snowflake for testing."""
-        import random
-        # Example violation data
-        example_violations = [
-            {
-                "area": "KP2,Jabar,Indonesia",
-                "section": "Fumigasi Barang Shower Kandang",
-                "violation": "Shoes are not on the shoe rack​ (ENG) / Sepatu tidak diletakkan di rak sepatu(BAHASA INDO)",
-                "image": "https://files.catbox.moe/vvx882.mp4"
-            },
-            # {
-            #     "area": "KP2, Warehouse B",
-            #     "section": "Loading Dock",
-            #     "violation": "叉车违规操作",
-            #     "image": "https://files.catbox.moe/2hf0ji.mp4"
-            # },
-            # {
-            #     "area": "KP3, Quality Control",
-            #     "section": "Inspection Area",
-            #     "violation": "工作区域未清洁",
-            #     "image": "https://ohiomagazine.imgix.net/sitefinity/images/default-source/articles/2021/july-august-2021/farms-slate-run-farm-sheep-credit-megan-leigh-barnard.jpg?sfvrsn=59d8a238_8&w=960&auto=compress%2Cformat"
-            # }
-        ]
-        violation_data = random.choice(example_violations)
-        now = datetime.now()
-        timestamp_str = now.strftime("%m/%d/%y %I:%M %p")
+    
+    def add_random_violation_from_db(self, use_now_timestamp: bool = True, mark_unresolved: bool = True):
+        """
+        Pick one random row already in SWINE_NEW_ALERT and re-insert it.
+        Returns a ViolationRecord (row_index = -1) or None on failure.
+        """
         conn = get_snowflake_connection()
         cs = conn.cursor()
         try:
+            # 1) get one random source row
+            cs.execute(
+                f"""SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY
+                    FROM {TABLE_NAME}
+                    ORDER BY RANDOM()
+                    LIMIT 1"""
+            )
+            row = cs.fetchone()
+            if not row:
+                return None
+
+            src = ViolationRecord.from_snowflake_row(row)
+            # 2) decide values for the clone
+            timestamp_str = (
+                datetime.now().strftime("%m/%d/%y %I:%M %p") if use_now_timestamp else src.timestamp
+            )
+            reply_val = "false" if mark_unresolved else ("true" if src.resolved else "false")
+
+            # 3) insert the clone
             cs.execute(
                 f"""INSERT INTO {TABLE_NAME}
-                (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY)
-                VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY)
+                    VALUES (%s, %s, %s, %s, %s, %s)""",
                 (
                     timestamp_str,
-                    violation_data["area"],
-                    violation_data["section"],
-                    violation_data["violation"],
-                    violation_data["image"],
-                    "false"
-                )
+                    src.factory_area,
+                    src.inspection_section,
+                    src.violation_type,
+                    src.image_url,
+                    reply_val,
+                ),
             )
             conn.commit()
+
+            # 4) return the values we just wrote
             return ViolationRecord(
                 timestamp=timestamp_str,
-                factory_area=violation_data["area"],
-                inspection_section=violation_data["section"],
-                violation_type=violation_data["violation"],
-                image_url=violation_data["image"],
-                resolved=False,
-                row_index=-1
+                factory_area=src.factory_area,
+                inspection_section=src.inspection_section,
+                violation_type=src.violation_type,
+                image_url=src.image_url,
+                resolved=(reply_val == "true"),
+                row_index=-1,
             )
         except Exception as e:
-            print(f"Error adding example violation to Snowflake: {e}")
-            return ViolationRecord(
-                timestamp=timestamp_str,
-                factory_area="Error",
-                inspection_section="Error",
-                violation_type="Failed to add violation",
-                image_url="",
-                resolved=False,
-                row_index=-1
-            )
+            print(f"Error cloning random violation: {e}")
+            return None
         finally:
             cs.close()
             conn.close()
+    
+
+    # def add_example_violation(self) -> ViolationRecord:
+    #     """Add an example violation to Snowflake for testing."""
+    #     import random
+    #     # Example violation data
+    #     example_violations = [
+    #         {
+    #             "area": "KP2,Jabar,Indonesia",
+    #             "section": "Fumigasi Barang Shower Kandang",
+    #             "violation": "Shoes are not on the shoe rack​ (ENG) / Sepatu tidak diletakkan di rak sepatu(BAHASA INDO)",
+    #             "image": "https://files.catbox.moe/vvx882.mp4"
+    #         },
+    #         # {
+    #         #     "area": "KP2, Warehouse B",
+    #         #     "section": "Loading Dock",
+    #         #     "violation": "叉车违规操作",
+    #         #     "image": "https://files.catbox.moe/2hf0ji.mp4"
+    #         # },
+    #         # {
+    #         #     "area": "KP3, Quality Control",
+    #         #     "section": "Inspection Area",
+    #         #     "violation": "工作区域未清洁",
+    #         #     "image": "https://ohiomagazine.imgix.net/sitefinity/images/default-source/articles/2021/july-august-2021/farms-slate-run-farm-sheep-credit-megan-leigh-barnard.jpg?sfvrsn=59d8a238_8&w=960&auto=compress%2Cformat"
+    #         # }
+    #     ]
+    #     violation_data = random.choice(example_violations)
+    #     now = datetime.now()
+    #     timestamp_str = now.strftime("%m/%d/%y %I:%M %p")
+    #     conn = get_snowflake_connection()
+    #     cs = conn.cursor()
+    #     try:
+    #         cs.execute(
+    #             f"""INSERT INTO {TABLE_NAME}
+    #             (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY)
+    #             VALUES (%s, %s, %s, %s, %s, %s)""",
+    #             (
+    #                 timestamp_str,
+    #                 violation_data["area"],
+    #                 violation_data["section"],
+    #                 violation_data["violation"],
+    #                 violation_data["image"],
+    #                 "false"
+    #             )
+    #         )
+    #         conn.commit()
+    #         return ViolationRecord(
+    #             timestamp=timestamp_str,
+    #             factory_area=violation_data["area"],
+    #             inspection_section=violation_data["section"],
+    #             violation_type=violation_data["violation"],
+    #             image_url=violation_data["image"],
+    #             resolved=False,
+    #             row_index=-1
+    #         )
+    #     except Exception as e:
+    #         print(f"Error adding example violation to Snowflake: {e}")
+    #         return ViolationRecord(
+    #             timestamp=timestamp_str,
+    #             factory_area="Error",
+    #             inspection_section="Error",
+    #             violation_type="Failed to add violation",
+    #             image_url="",
+    #             resolved=False,
+    #             row_index=-1
+    #         )
+    #     finally:
+    #         cs.close()
+    #         conn.close()
+    # in data.py (add inside class DataParser)
+
+
+
+
+
+
 
     def add_chat_id(self, chat_id: str) -> bool:
         """Add a WhatsApp chat ID (numeric phone) to Snowflake for notifications."""
