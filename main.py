@@ -1,24 +1,26 @@
-from data import DataParser
+from data import DataParser, get_snowflake_connection
 import logging
 import os
-
 from dotenv import load_dotenv
 import threading
 import time
 from typing import Any, Optional
 from flask import Flask
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-# WhatsApp via pywa (Cloud API)
-try:
-    from pywa import WhatsApp  # type: ignore
-except Exception:  # pywa might not be installed in all environments
-    WhatsApp = None  # type: ignore
+# # WhatsApp via pywa (Cloud API)
+# try:
+#     from pywa import WhatsApp  # type: ignore
+# except Exception:  # pywa might not be installed in all environments
+#     WhatsApp = None  # type: ignore
+
+WhatsApp = None  # type: ignore
 
 load_dotenv()
 
-WA_PHONE_ID = os.getenv("WA_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID") or "775233089000345"
-WA_TOKEN = os.getenv("WA_TOKEN") or os.getenv("WHATSAPP_TOKEN") or "EAAKlsRsZCkqgBPPP7iU5NebzJIJGydLAoBEUH3e0CY27sZB2k1atuMC9eIeVMDbj7fDKXF4NTfkA6DcWGZAasDkfsRzF5LkkRFkuU2CKRnSeR4v4Dfi9KkGnI5PYDpwifbpO9wGv1YuinGyGvVMdbVMHcpGAisncsZCnXkZBHOqLZCI77jtVKZCZATsPQ1CZAtH9E2wZDZD"
-
+WA_PHONE_ID = os.getenv("WA_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID") 
+WA_TOKEN = os.getenv("WA_TOKEN") or os.getenv("WHATSAPP_TOKEN") 
 STREAMLIT_URL = "https://hrtowii-fyp-proj-japfa-cctvstreamlit-app-nt7gbx.streamlit.app/"
 
 wa = None
@@ -32,6 +34,89 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+import requests
+
+API_URL = f"https://graph.facebook.com/v20.0/{WA_PHONE_ID}/messages"
+HEADERS = {
+    "Authorization": f"Bearer {WA_TOKEN}",
+    "Content-Type": "application/json",
+}
+
+
+def wa_send(payload: dict):
+    r = requests.post(API_URL, headers=HEADERS, json=payload, timeout=30)
+    ok = 200 <= r.status_code < 300
+    try:
+        body = r.json()
+    except Exception:
+        body = {"raw": r.text}
+    if not ok:
+        logger.error(f"WA send failed [{r.status_code}]: {body}")
+    return ok, r.status_code, body
+
+def wa_send_text(to: str, text: str):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": text}
+    }
+    return wa_send(payload)
+
+def wa_send_image_url(to: str, image_url: str, caption: str | None = None):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "image",
+        "image": {"link": image_url, **({"caption": caption} if caption else {})}
+    }
+    return wa_send(payload)
+
+# Update to your approved template + language
+TEMPLATE_NAME = os.getenv("WA_TEMPLATE_NAME", "alert_template")
+TEMPLATE_LANG = os.getenv("WA_TEMPLATE_LANG", "en")
+
+def wa_send_violation_template(
+    to: str,
+    case_id: str,
+    time_sg: str,
+    area: str,
+    section: str,
+    violation: str,
+    include_dynamic_url_button: bool = True
+):
+    components = [{
+        "type": "body",
+        "parameters": [
+            {"type": "text", "text": case_id},
+            {"type": "text", "text": time_sg},
+            {"type": "text", "text": area},
+            {"type": "text", "text": section},
+            {"type": "text", "text": violation},
+        ]
+    }]
+    if include_dynamic_url_button:
+        components.append({
+            "type": "button",
+            "sub_type": "url",
+            "index": "0",
+            "parameters": [{"type": "text", "text": case_id}]
+        })
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": TEMPLATE_NAME,
+            "language": {"code": TEMPLATE_LANG},
+            "components": components
+        }
+    }
+    return wa_send(payload)
+
+DEFAULT_TZ = "Asia/Singapore"
+
 
 
 class ViolationMonitor:
@@ -70,7 +155,7 @@ class ViolationMonitor:
         except Exception as e:
             logger.error(f"Failed to load chat IDs from Snowflake: {e}")
             # Fallback to default chat IDs if Snowflake fails
-            self.active_chat_ids = {"6581899220", "6597607916"}
+            self.active_chat_ids = {"96370843"}
             logger.info("Using fallback default chat IDs")
 
     def sync_chat_ids(self):
@@ -86,54 +171,108 @@ class ViolationMonitor:
             logger.error(f"Failed to sync chat IDs from Snowflake: {e}")
 
     def send_new_violation_alert(self, record, chat_id):
-        """Send alert for new violation to specific WhatsApp chat"""
-        print(record)
-        case_url = f"{STREAMLIT_URL}/?case_id={record.row_index}"
+    # Send alert for new violation to specific WhatsApp chat (RAW API)
+        case_url = f"{STREAMLIT_URL}/?case_id={record.id}"
+        to_number = str(6596370843)#chat_id change my number to chatid after testing
+        # Use creation timezone directly
+        creation_tz = getattr(record, 'creation_tz', 'Asia/Singapore')
+        tz_name = creation_tz.split("/")[-1] if "/" in creation_tz else creation_tz
+        time_with_tz = f"{record.timestamp} ({tz_name})"
+        # Try sending via approved template first   #str(record.timestamp),
+        ok, _, _ = wa_send_violation_template(
+                to=to_number,
+                case_id=str(record.id),
+                time_sg=time_with_tz,
+                area=str(record.factory_area),
+                section=str(record.inspection_section),
+                violation=str(record.violation_type),
+                include_dynamic_url_button=True  # requires template URL ending with {{1}}
+            )
+        if ok:
+            return
 
+        # Fallback: text (if template missing/mismatch)
         violation_text = (
-            f"🚨 NEW VIOLATION DETECTED\n\n"
-            f"🆔 Case ID: {record.row_index}\n"
-            f"⏰ Time: {record.timestamp}\n"
+            "🚨 NEW VIOLATION DETECTED\n\n"
+            f"🆔 Case ID: {record.id}\n"
+            f"⏰ Time: {time_with_tz}\n"
             f"🏭 Area: {record.factory_area}\n"
             f"🔍 Section: {record.inspection_section}\n"
             f"⚠️ Violation: {record.violation_type}\n\n"
-            f"🔗 Review Case: {case_url}\n\n"
-            # f"📋 Action Required: Reply with commands below:\n"
-            # f"• Type 'resolve {record.row_index}' to mark as resolved\n"
-            # f"• Type 'status' to view current statistics"
+            f"🔗 Review Case: {case_url}\n"
         )
 
-        if self.bot is None:
-            logger.error("WhatsApp client is not initialized")
-            return
+        if getattr(record, "image_url", None):
+            ok2, _, _ = wa_send_image_url(to_number, record.image_url, caption=violation_text)
+            if ok2:
+                return
+        wa_send_text(to_number, violation_text)
 
-        # Ensure numeric phone number (E.164 without '+')
-        to_number = str(chat_id)
+    # def monitor_sql_db(self):
+    #     while self.monitoring_active:
+    #         try:
+    #             # Periodic chat ID sync (every 12 cycles = 1 minute)
+    #             self.sync_cycle_counter += 1
+    #             if self.sync_cycle_counter >= 12:
+    #                 self.sync_chat_ids()
+    #                 self.sync_cycle_counter = 0
 
-        try:
-            # Try sending image by URL with caption if available, otherwise send text message
-            if hasattr(record, "image_url") and record.image_url:
-                try:
-                    # pywa supports send_image with a link
-                    self.bot.send_image(
-                        to=to_number,
-                        image=record.image_url,
-                        caption=violation_text,
-                    )
-                except AttributeError:
-                    # Fallback if send_image is unavailable in installed pywa version
-                    fallback_text = f"{violation_text}\n🖼️ Image: {record.image_url}"
-                    self.bot.send_message(to=to_number, text=fallback_text)
-            else:
-                self.bot.send_message(to=to_number, text=violation_text)
-        except Exception as e:
-            print(f"Failed to send violation alert: {e}")
-            # Fallback: try to send just the text message
-            try:
-                self.bot.send_message(to=to_number, text=violation_text)
-            except Exception as fallback_error:
-                print(f"Failed to send fallback message: {fallback_error}")
+    #             temp_parser = DataParser()
+    #             current_records = temp_parser.parse()
+    #             current_count = len(current_records)
+
+    #             logger.info(
+    #                 f"Monitoring: Found {current_count} total records, last count was {self.last_record_count}"
+    #             )
+
+    #             if current_count > self.last_record_count:
+    #                 new_records = current_records[self.last_record_count :]
+    #                 logger.info(f"Detected {len(new_records)} new violation(s)")
+
+    #                 # Send notifications to all active chat IDs
+    #                 for record in new_records:
+    #                     for chat_id in self.active_chat_ids:
+    #                         try:
+    #                             print("meow")
+    #                             self.send_new_violation_alert(record, chat_id)
+    #                         except Exception as e:
+    #                             logger.error(
+    #                                 f"Failed to send notification to chat {chat_id}: {e}"
+    #                             )
+
+    #                 self.last_record_count = current_count
+
+    #                 self.parser.records = current_records
+
+    #             time.sleep(5)  # Check every 5 seconds
+
+    #         except Exception as e:
+    #             logger.error(f"Error monitoring sql db: {e}")
+    #             time.sleep(5)
+
     def monitor_sql_db(self):
+        """Monitor database for new violations by tracking actual record IDs instead of just counting"""
+        
+        # Initialize set to track seen records
+        seen_record_ids = set()
+        
+        # Load existing records on startup
+        try:
+            temp_parser = DataParser()
+            initial_records = temp_parser.parse()
+            
+            # Track all existing records by their unique characteristics
+            for record in initial_records:
+                record_id = self._get_record_identifier(record)
+                seen_record_ids.add(record_id)
+            
+            self.last_record_count = len(initial_records)
+            logger.info(f"Initialized monitoring with {len(seen_record_ids)} existing records")
+            print(f"[DEBUG] Tracking {len(seen_record_ids)} existing record IDs")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize monitoring: {e}")
+
         while self.monitoring_active:
             try:
                 # Periodic chat ID sync (every 12 cycles = 1 minute)
@@ -146,28 +285,45 @@ class ViolationMonitor:
                 current_records = temp_parser.parse()
                 current_count = len(current_records)
 
-                logger.info(
-                    f"Monitoring: Found {current_count} total records, last count was {self.last_record_count}"
-                )
+                print(f"[DEBUG] Current DB records: {current_count}")
 
-                if current_count > self.last_record_count:
-                    new_records = current_records[self.last_record_count :]
-                    logger.info(f"Detected {len(new_records)} new violation(s)")
+                # Find truly NEW records (not seen before)
+                new_records = []
+                current_record_ids = set()
+                
+                for record in current_records:
+                    record_id = self._get_record_identifier(record)
+                    current_record_ids.add(record_id)
+                    
+                    # If this record ID hasn't been seen before, it's new
+                    if record_id not in seen_record_ids:
+                        new_records.append(record)
+                        seen_record_ids.add(record_id)
 
-                    # Send notifications to all active chat IDs
+                if new_records:
+                    logger.info(f"Detected {len(new_records)} truly NEW violation(s)")
+                    print(f"[DEBUG] Found {len(new_records)} new records to send alerts for")
+                    print(f"[DEBUG] Sending alerts to {len(self.active_chat_ids)} chat IDs")
+
+                    # Send notifications for new records only
                     for record in new_records:
+                        print(f"[DEBUG] New violation: Case {record.row_index} - {record.violation_type}")
                         for chat_id in self.active_chat_ids:
                             try:
-                                print("meow")
+                                print(f"[DEBUG] Sending alert to {chat_id} for case {record.row_index}")
                                 self.send_new_violation_alert(record, chat_id)
                             except Exception as e:
-                                logger.error(
-                                    f"Failed to send notification to chat {chat_id}: {e}"
-                                )
+                                logger.error(f"Failed to send notification to chat {chat_id}: {e}")
 
-                    self.last_record_count = current_count
+                # Clean up deleted records from our tracking set
+                # Remove IDs that no longer exist in the current database
+                seen_record_ids = seen_record_ids.intersection(current_record_ids)
+                
+                # Update tracking
+                self.last_record_count = current_count
+                self.parser.records = current_records
 
-                    self.parser.records = current_records
+                logger.info(f"Monitoring: {current_count} total records, tracking {len(seen_record_ids)} IDs")
 
                 time.sleep(5)  # Check every 5 seconds
 
@@ -175,9 +331,21 @@ class ViolationMonitor:
                 logger.error(f"Error monitoring sql db: {e}")
                 time.sleep(5)
 
+    def _get_record_identifier(self, record):
+        """Generate a unique identifier for a record based on its content"""
+        # Create ID based on multiple fields to handle cases where timestamps might be similar
+        # Using row_index as primary identifier since it should be unique
+        if hasattr(record, 'id') and record.id:
+            return f"id_{record.id}"
+        
+        # Fallback: use combination of fields if row_index not available
+        return f"{record.timestamp}_{record.factory_area}_{record.inspection_section}_{record.violation_type}"
+
+
+
     def start_monitoring(self, chat_id):
-        """Register a chat for monitoring notifications. Only main() starts the monitoring thread."""
-        # Add to Snowflake and local set
+    # """Register a chat for monitoring notifications. Only main() starts the monitoring thread."""
+    # Add to Snowflake and local set
         if chat_id != "system":
             success = self.parser.add_chat_id(chat_id)
             if success:
@@ -199,20 +367,24 @@ class ViolationMonitor:
             # Do NOT start a new thread here; only main() does that.
             self.monitoring_active = True
             logger.info("Global monitoring system marked active (thread started in main)")
-            # Only send notification if chat_id is not 'system'
-            if self.bot is not None and chat_id != "system":
+
+            # Notify the chat (RAW Cloud API)
+            if chat_id != "system":
                 try:
-                    to_number = str(chat_id)
-                    self.bot.send_message(
-                        to=to_number,
-                        text="Now monitoring sql db for new violations."
-                    )
+                    wa_send_text(str(chat_id), "Now monitoring SQL DB for new violations.")
                 except Exception as e:
                     logger.error(f"Failed to send monitoring started message: {e}")
             return True
         else:
             logger.info(f"Chat {chat_id} added to existing monitoring system")
+            # Optional: confirm subscription for additional chats
+            if chat_id != "system":
+                try:
+                    wa_send_text(str(chat_id), "Notifications enabled for this chat.")
+                except Exception as e:
+                    logger.error(f"Failed to send subscription message: {e}")
             return False
+
 
     def stop_monitoring(self, chat_id):
         """Stop monitoring for a specific chat, or globally if no more chats"""
@@ -229,7 +401,20 @@ class ViolationMonitor:
             self.monitoring_active = False
             self.monitoring_thread = None
             logger.info("Global monitoring system stopped")
+            # Optional: tell the last chat it stopped globally
+            if chat_id != "system":
+                try:
+                    wa_send_text(str(chat_id), "Monitoring system stopped globally.")
+                except Exception as e:
+                    logger.error(f"Failed to send stop message: {e}")
             return True  # Indicate global stop
+
+        # Optional: confirm only this chat was unsubscribed
+        if chat_id != "system":
+            try:
+                wa_send_text(str(chat_id), "Notifications disabled for this chat.")
+            except Exception as e:
+                logger.error(f"Failed to send per-chat stop message: {e}")
         return False  # Indicate only chat-specific stop
 
     def get_status(self):
@@ -375,12 +560,12 @@ def start_command(notification: Any) -> None:
 def send_violation_message(notification, record):
     """Send a violation message with case-specific Streamlit link"""
     # Create case-specific Streamlit app link
-    case_url = f"{STREAMLIT_URL}/?case_id={record.row_index}"
+    case_url = f"{STREAMLIT_URL}/?case_id={record.id}"
     status_text = "✅ Resolved" if record.resolved else "❌ Unresolved"
 
     violation_text = (
         f"🆔 Case ID: {record.row_index}\n"
-        f"⏰ Time: {record.timestamp}\n"
+        f"⏰ Time: {record.timestamp} \n"
         f"🏭 Area: {record.factory_area}\n"
         f"🔍 Section: {record.inspection_section}\n"
         f"⚠️ Violation: {record.violation_type}\n"

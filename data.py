@@ -4,6 +4,9 @@ from typing import List
 import os
 import snowflake.connector
 from dotenv import load_dotenv
+import uuid
+import random
+from zoneinfo import ZoneInfo
 
 # Load environment variables (for local development or production)
 load_dotenv()
@@ -29,6 +32,10 @@ def get_snowflake_connection():
         role=role,
     )
 
+def get_system_timezone():
+    """Get the system's current timezone"""
+    return str(datetime.now().astimezone().tzinfo)
+
 @dataclass
 class ViolationRecord:
     timestamp: str
@@ -36,18 +43,27 @@ class ViolationRecord:
     inspection_section: str
     violation_type: str
     image_url: str
+    id: str
+
     resolved: bool = False
     row_index: int = -1
+    creation_tz: str = "Asia/Singapore"  # Add this field
+
+
 
     @classmethod
     def from_snowflake_row(cls, row, row_index: int = -1):
-        # row: (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY)
+        # row: (ID, TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY)
         timestamp_str = row[0]
         factory_area = row[1]
         inspection_section = row[2]
         violation_type = row[3]
         image_url = row[4]
         resolved = (row[5] or "").strip().lower() == "true"
+        rec_id = row[6]
+        creation_tz=row[7] if len(row) > 7 and row[7] else "Asia/Singapore"
+
+
         return cls(
             timestamp=timestamp_str,
             factory_area=factory_area,
@@ -55,7 +71,9 @@ class ViolationRecord:
             violation_type=violation_type,
             image_url=image_url,
             resolved=resolved,
-            row_index=row_index
+            id=rec_id,
+            creation_tz=creation_tz,
+            row_index=row_index 
         )
 
 class DataParser:
@@ -68,7 +86,7 @@ class DataParser:
         conn = get_snowflake_connection()
         cs = conn.cursor()
         try:
-            cs.execute(f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY FROM {TABLE_NAME}")
+            cs.execute(f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY, ID, CREATION_TZ FROM {TABLE_NAME}")
             rows = cs.fetchall()
             for idx, row in enumerate(rows, start=1):
                 record = ViolationRecord.from_snowflake_row(row, idx)
@@ -77,14 +95,105 @@ class DataParser:
             cs.close()
             conn.close()
         return self.records
+    
+    def get_available_timezones(self):
+        """Get list of timezones that have violations in the database"""
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        timezones = []
+        try:
+            cs.execute(f"SELECT DISTINCT CREATION_TZ FROM {TABLE_NAME} WHERE CREATION_TZ IS NOT NULL ORDER BY CREATION_TZ")
+            rows = cs.fetchall()
+            timezones = [row[0] for row in rows if row[0]]
+        except Exception as e:
+            print(f"Error fetching timezones: {e}")
+        finally:
+            cs.close()
+            conn.close()
+        return timezones
 
+    def get_records_by_timezone(self, timezone_filter: str = None) -> List[ViolationRecord]:
+        """Get violation records filtered by timezone"""
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        records = []
+        try:
+            if timezone_filter and timezone_filter != "All Timezones":
+                cs.execute(
+                    f"""SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, 
+                    IMAGE_URL, REPLY, ID, CREATION_TZ 
+                    FROM {TABLE_NAME} 
+                    WHERE CREATION_TZ = %s 
+                    ORDER BY TRY_TO_TIMESTAMP_NTZ(TIMESTAMP) DESC, ID DESC""",
+                    (timezone_filter,)
+                )
+            else:
+                # Return all records if no filter or "All Timezones" selected
+                cs.execute(
+                    f"""SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, 
+                    IMAGE_URL, REPLY, ID, CREATION_TZ 
+                    FROM {TABLE_NAME} 
+                    ORDER BY TRY_TO_TIMESTAMP_NTZ(TIMESTAMP) DESC, ID DESC"""
+                )
+            
+            rows = cs.fetchall()
+            for idx, row in enumerate(rows, start=1):
+                records.append(ViolationRecord.from_snowflake_row(row, idx))
+        except Exception as e:
+            print(f"Error fetching records by timezone: {e}")
+        finally:
+            cs.close()
+            conn.close()
+        return records
+
+    def get_unresolved_records_by_timezone(self, timezone_filter: str = None) -> List[ViolationRecord]:
+        """Get unresolved violation records filtered by timezone"""
+        conn = get_snowflake_connection()
+        cs = conn.cursor()
+        records = []
+        try:
+            if timezone_filter and timezone_filter != "All Timezones":
+                cs.execute(
+                    f"""
+                    SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA,
+                        VIOLATION_TYPE, IMAGE_URL, REPLY, ID, CREATION_TZ
+                    FROM {TABLE_NAME}
+                    WHERE (REPLY IS NULL OR LOWER(REPLY) != 'true')
+                    AND CREATION_TZ = %s
+                    ORDER BY TRY_TO_TIMESTAMP_NTZ(TIMESTAMP) DESC, ID DESC
+                    """,
+                    (timezone_filter,)
+                )
+            else:
+                # Return all unresolved records if no filter or "All Timezones" selected
+                cs.execute(
+                    f"""
+                    SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA,
+                        VIOLATION_TYPE, IMAGE_URL, REPLY, ID, CREATION_TZ
+                    FROM {TABLE_NAME}
+                    WHERE REPLY IS NULL OR LOWER(REPLY) != 'true'
+                    ORDER BY TRY_TO_TIMESTAMP_NTZ(TIMESTAMP) DESC, ID DESC
+                    """
+                )
+            
+            rows = cs.fetchall()
+            for idx, row in enumerate(rows, start=1):
+                records.append(ViolationRecord.from_snowflake_row(row, idx))
+        except Exception as e:
+            print(f"Error fetching unresolved records by timezone: {e}")
+        finally:
+            cs.close()
+            conn.close()
+        return records
+
+        
     def get_records_by_violation_type(self, violation_type: str) -> List[ViolationRecord]:
         conn = get_snowflake_connection()
         cs = conn.cursor()
         records = []
         try:
             cs.execute(
-                f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY FROM {TABLE_NAME} WHERE VIOLATION_TYPE = %s",
+                f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY, ID, CREATION_TZ FROM {TABLE_NAME} WHERE VIOLATION_TYPE = %s",
                 (violation_type,)
             )
             rows = cs.fetchall()
@@ -101,7 +210,7 @@ class DataParser:
         records = []
         try:
             cs.execute(
-                f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY FROM {TABLE_NAME} WHERE FARM_LOCATION = %s",
+                f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY, ID, CREATION_TZ FROM {TABLE_NAME} WHERE FARM_LOCATION = %s",
                 (factory_area,)
             )
             rows = cs.fetchall()
@@ -119,19 +228,31 @@ class DataParser:
         if not (1 <= row_index <= len(records)):
             return False
         record = records[row_index - 1]
+        case_id = record.id 
+
         conn = get_snowflake_connection()
         cs = conn.cursor()
+        # try:
+        #     cs.execute(
+        #         f"""UPDATE {TABLE_NAME}
+        #         SET REPLY = %s
+        #         WHERE ID  %s, TIMESTAMP = %s AND FARM_LOCATION = %s AND INSPECTION_AREA = %s AND VIOLATION_TYPE = %s AND IMAGE_URL = %s""",
+        #         (str(resolved).lower(), record.id, record.timestamp, record.factory_area, record.inspection_section, record.violation_type, record.image_url)
+        #     )
+        #     conn.commit()
+        #     # Update in-memory record
+        #     record.resolved = resolved
+        #     return True
         try:
             cs.execute(
-                f"""UPDATE {TABLE_NAME}
-                SET REPLY = %s
-                WHERE TIMESTAMP = %s AND FARM_LOCATION = %s AND INSPECTION_AREA = %s AND VIOLATION_TYPE = %s AND IMAGE_URL = %s""",
-                (str(resolved).lower(), record.timestamp, record.factory_area, record.inspection_section, record.violation_type, record.image_url)
+                f"UPDATE {TABLE_NAME} SET REPLY = %s WHERE ID = %s",
+                (str(resolved).lower(), case_id)
             )
             conn.commit()
-            # Update in-memory record
-            record.resolved = resolved
-            return True
+            rc = getattr(cs, "rowcount", 0) or 0
+            if rc > 0:
+                record.resolved = resolved   # update in-memory copy
+            return rc > 0
         except Exception as e:
             print(f"Error updating Snowflake: {e}")
             return False
@@ -146,7 +267,13 @@ class DataParser:
         records = []
         try:
             cs.execute(
-                f"SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY FROM {TABLE_NAME} WHERE REPLY IS NULL OR LOWER(REPLY) != 'true'"
+                f"""
+                SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA,
+                    VIOLATION_TYPE, IMAGE_URL, REPLY, ID, CREATION_TZ
+                FROM {TABLE_NAME}
+                WHERE REPLY IS NULL OR LOWER(REPLY) != 'true'
+                ORDER BY TRY_TO_TIMESTAMP_NTZ(TIMESTAMP) DESC, ID DESC
+                """
             )
             rows = cs.fetchall()
             for idx, row in enumerate(rows, start=1):
@@ -161,12 +288,12 @@ class DataParser:
         Pick one random row already in SWINE_NEW_ALERT and re-insert it.
         Returns a ViolationRecord (row_index = -1) or None on failure.
         """
-        conn = get_snowflake_connection()
-        cs = conn.cursor()
+        conn = get_snowflake_connection()  # <- Added connection
+        cs = conn.cursor()    
         try:
             # 1) get one random source row
             cs.execute(
-                f"""SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY
+                f"""SELECT TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY, ID, CREATION_TZ
                     FROM {TABLE_NAME}
                     ORDER BY RANDOM()
                     LIMIT 1"""
@@ -177,24 +304,31 @@ class DataParser:
 
             src = ViolationRecord.from_snowflake_row(row)
             # 2) decide values for the clone
-            timestamp_str = (
-                datetime.now().strftime("%m/%d/%y %I:%M %p") if use_now_timestamp else src.timestamp
-            )
+            # timestamp_str = (
+            #     datetime.now().strftime("%m/%d/%y %I:%M %p") if use_now_timestamp else src.timestamp
+            # )
+            system_tz = get_system_timezone()
+            # Create timestamp using system timezone
+            if use_now_timestamp:
+                # Create current time in system timezone
+                now_local = datetime.now(ZoneInfo(system_tz))
+                timestamp_str = now_local.strftime("%m/%d/%y %I:%M %p")
+            else:
+                timestamp_str = src.timestamp
+                
             reply_val = "false" if mark_unresolved else ("true" if src.resolved else "false")
+            new_id = str(uuid.uuid4())
+
 
             # 3) insert the clone
             cs.execute(
-                f"""INSERT INTO {TABLE_NAME}
-                    (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY)
-                    VALUES (%s, %s, %s, %s, %s, %s)""",
-                (
-                    timestamp_str,
-                    src.factory_area,
-                    src.inspection_section,
-                    src.violation_type,
-                    src.image_url,
-                    reply_val,
-                ),
+                f"""
+                INSERT INTO {TABLE_NAME}
+                (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY, ID, CREATION_TZ)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (timestamp_str, src.factory_area, src.inspection_section,
+                src.violation_type, src.image_url, reply_val, new_id, system_tz)
             )
             conn.commit()
 
@@ -206,6 +340,8 @@ class DataParser:
                 violation_type=src.violation_type,
                 image_url=src.image_url,
                 resolved=(reply_val == "true"),
+                id=new_id,
+                creation_tz=system_tz,
                 row_index=-1,
             )
         except Exception as e:
@@ -215,82 +351,6 @@ class DataParser:
             cs.close()
             conn.close()
     
-
-    # def add_example_violation(self) -> ViolationRecord:
-    #     """Add an example violation to Snowflake for testing."""
-    #     import random
-    #     # Example violation data
-    #     example_violations = [
-    #         {
-    #             "area": "KP2,Jabar,Indonesia",
-    #             "section": "Fumigasi Barang Shower Kandang",
-    #             "violation": "Shoes are not on the shoe rack​ (ENG) / Sepatu tidak diletakkan di rak sepatu(BAHASA INDO)",
-    #             "image": "https://files.catbox.moe/vvx882.mp4"
-    #         },
-    #         # {
-    #         #     "area": "KP2, Warehouse B",
-    #         #     "section": "Loading Dock",
-    #         #     "violation": "叉车违规操作",
-    #         #     "image": "https://files.catbox.moe/2hf0ji.mp4"
-    #         # },
-    #         # {
-    #         #     "area": "KP3, Quality Control",
-    #         #     "section": "Inspection Area",
-    #         #     "violation": "工作区域未清洁",
-    #         #     "image": "https://ohiomagazine.imgix.net/sitefinity/images/default-source/articles/2021/july-august-2021/farms-slate-run-farm-sheep-credit-megan-leigh-barnard.jpg?sfvrsn=59d8a238_8&w=960&auto=compress%2Cformat"
-    #         # }
-    #     ]
-    #     violation_data = random.choice(example_violations)
-    #     now = datetime.now()
-    #     timestamp_str = now.strftime("%m/%d/%y %I:%M %p")
-    #     conn = get_snowflake_connection()
-    #     cs = conn.cursor()
-    #     try:
-    #         cs.execute(
-    #             f"""INSERT INTO {TABLE_NAME}
-    #             (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY)
-    #             VALUES (%s, %s, %s, %s, %s, %s)""",
-    #             (
-    #                 timestamp_str,
-    #                 violation_data["area"],
-    #                 violation_data["section"],
-    #                 violation_data["violation"],
-    #                 violation_data["image"],
-    #                 "false"
-    #             )
-    #         )
-    #         conn.commit()
-    #         return ViolationRecord(
-    #             timestamp=timestamp_str,
-    #             factory_area=violation_data["area"],
-    #             inspection_section=violation_data["section"],
-    #             violation_type=violation_data["violation"],
-    #             image_url=violation_data["image"],
-    #             resolved=False,
-    #             row_index=-1
-    #         )
-    #     except Exception as e:
-    #         print(f"Error adding example violation to Snowflake: {e}")
-    #         return ViolationRecord(
-    #             timestamp=timestamp_str,
-    #             factory_area="Error",
-    #             inspection_section="Error",
-    #             violation_type="Failed to add violation",
-    #             image_url="",
-    #             resolved=False,
-    #             row_index=-1
-    #         )
-    #     finally:
-    #         cs.close()
-    #         conn.close()
-    # in data.py (add inside class DataParser)
-
-
-
-
-
-
-
     def add_chat_id(self, chat_id: str) -> bool:
         """Add a WhatsApp chat ID (numeric phone) to Snowflake for notifications."""
         if not isinstance(chat_id, str) or not chat_id.isdigit() or not (8 <= len(chat_id) <= 15):

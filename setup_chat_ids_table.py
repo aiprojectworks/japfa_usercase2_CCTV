@@ -42,8 +42,7 @@ def create_chat_ids_table():
 
         # Insert default chat IDs (the ones currently hardcoded in main.py)
         default_chat_ids = [
-            "6581899220",
-            "6597607916"
+            "6596370843"
         ]
 
         for chat_id in default_chat_ids:
