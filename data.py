@@ -6,7 +6,7 @@ import snowflake.connector
 from dotenv import load_dotenv
 import uuid
 import random
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Load environment variables (for local development or production)
 load_dotenv()
@@ -34,7 +34,18 @@ def get_snowflake_connection():
 
 def get_system_timezone():
     """Get the system's current timezone"""
-    return str(datetime.now().astimezone().tzinfo)
+    local_tz = datetime.now().astimezone().tzinfo
+    # Prefer the IANA key if zoneinfo provided it
+    tz_key = getattr(local_tz, "key", None)
+    if tz_key:
+        return tz_key
+    tz_name = str(local_tz)
+    try:
+        ZoneInfo(tz_name)
+        return tz_name
+    except ZoneInfoNotFoundError:
+        # Fallback to deployment default
+        return "Asia/Singapore"
 
 @dataclass
 class ViolationRecord:
@@ -308,10 +319,15 @@ class DataParser:
             #     datetime.now().strftime("%m/%d/%y %I:%M %p") if use_now_timestamp else src.timestamp
             # )
             system_tz = get_system_timezone()
+            try:
+                system_zone = ZoneInfo(system_tz)
+            except ZoneInfoNotFoundError:
+                system_tz = "Asia/Singapore"
+                system_zone = ZoneInfo(system_tz)
             # Create timestamp using system timezone
             if use_now_timestamp:
                 # Create current time in system timezone
-                now_local = datetime.now(ZoneInfo(system_tz))
+                now_local = datetime.now(system_zone)
                 timestamp_str = now_local.strftime("%m/%d/%y %I:%M %p")
             else:
                 timestamp_str = src.timestamp

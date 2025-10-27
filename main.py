@@ -173,7 +173,7 @@ class ViolationMonitor:
     def send_new_violation_alert(self, record, chat_id):
     # Send alert for new violation to specific WhatsApp chat (RAW API)
         case_url = f"{STREAMLIT_URL}/?case_id={record.id}"
-        to_number = str(6596370843)#chat_id change my number to chatid after testing
+        to_number = str(chat_id)#chat_id change my number to chatid after testing
         # Use creation timezone directly
         creation_tz = getattr(record, 'creation_tz', 'Asia/Singapore')
         tz_name = creation_tz.split("/")[-1] if "/" in creation_tz else creation_tz
