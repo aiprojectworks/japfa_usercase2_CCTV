@@ -20,7 +20,7 @@ WhatsApp = None  # type: ignore
 # If your instance/profile already has region set, you can omit region_name
 ssm = boto3.client("ssm", region_name="ap-southeast-1")
 
-PREFIX = "/poultry-swine"
+PREFIX = "/japfa_usercase2_CCTV"
 WA_NAMES = [
     "WA_PHONE_ID",
     "WA_TOKEN",
