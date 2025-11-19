@@ -93,10 +93,12 @@ class ViolationManager:
         try:
             new_id = str(uuid.uuid4())
             # Validate timestamp format
-            # Validate timestamp; still store as provided but ensure format is correct
-            datetime.strptime(timestamp_str, "%m/%d/%y %I:%M %p")
-            # Assume input is in user's selected timezone for creation metadata
+            # Parse timestamp and convert to UTC for storage
+            local_dt = datetime.strptime(timestamp_str, "%m/%d/%y %I:%M %p")
+            # Assume input is in user's selected timezone
             user_tz = st.session_state.get("user_tz", "Asia/Singapore")
+            localized_dt = local_dt.replace(tzinfo=ZoneInfo(user_tz))
+            utc_dt = localized_dt.astimezone(ZoneInfo("UTC"))
         
             # Insert into Snowflake
             from snowflake.connector import connect
@@ -105,8 +107,8 @@ class ViolationManager:
             try:
                 cs.execute(
                     """INSERT INTO SWINE_NEW_ALERT
-                    (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY, ID, CREATION_TZ)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (TIMESTAMP, FARM_LOCATION, INSPECTION_AREA, VIOLATION_TYPE, IMAGE_URL, REPLY, ID, EVENT_TIME_UTC, CREATION_TZ)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (
                         timestamp_str,
                         factory_area,
@@ -115,6 +117,7 @@ class ViolationManager:
                         image_url,
                         str(resolved).lower(),
                         new_id,
+                        utc_dt.isoformat(),
                         user_tz
                     )
                 )
@@ -410,7 +413,7 @@ if page == "📋 View Cases":
 
                     with col1:
                         st.write("**Case Details:**")
-                        st.write(f"**Case ID:** {case['row_index']}")
+                        st.write(f"**Case ID:** {case['id']}")
                         st.write(f"**Time:** {display_time}")
                         st.write(f"**Area:** {case['factory_area']}")
                         st.write(f"**Section:** {case['inspection_section']}")
@@ -471,7 +474,7 @@ elif page == "➕ Add New Case":
 
         with col1:
             timestamp_input = st.text_input("Timestamp", value=datetime.now().strftime("%m/%d/%y %I:%M %p"), help="Format: MM/DD/YY HH:MM AM/PM")
-            st.caption(f"⏰ Time will be recorded in: {user_tz}")
+            # st.caption(f"⏰ Time will be recorded in: {user_tz}")
             factory_area = st.text_input("Factory Area", placeholder="e.g., KP1, Production Line A")
             inspection_section = st.text_input("Inspection Section", placeholder="e.g., Assembly Station 3")
 
