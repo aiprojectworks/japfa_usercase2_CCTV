@@ -7,6 +7,7 @@ from typing import Any, Optional
 from flask import Flask
 from datetime import datetime
 from zoneinfo import ZoneInfo
+# from dotenv import load_dotenv
 import boto3
 
 # # WhatsApp via pywa (Cloud API)
@@ -17,6 +18,7 @@ import boto3
 
 WhatsApp = None  # type: ignore
 
+# AWS SSM Configuration (for AWS deployment)
 # If your instance/profile already has region set, you can omit region_name
 ssm = boto3.client("ssm", region_name="ap-southeast-1")
 
@@ -24,9 +26,11 @@ PREFIX = "/japfa_usercase2_CCTV"
 WA_NAMES = [
     "WA_PHONE_ID",
     "WA_TOKEN",
+    "WA_TEMPLATE_NAME",
+    "WA_TEMPLATE_LANG",
 ]
 
-# Fetch WhatsApp credentials from SSM
+# Fetch WhatsApp credentials and template settings from SSM (single call - more efficient)
 resp = ssm.get_parameters(
     Names=[f"{PREFIX}/{n}" for n in WA_NAMES],
     WithDecryption=True
@@ -35,13 +39,27 @@ resp = ssm.get_parameters(
 # Build a dict keyed by the short name
 wa_vals = {p["Name"].split("/")[-1]: p["Value"] for p in resp.get("Parameters", [])}
 
-# Optional: warn if some were not found
-missing = set(WA_NAMES) - set(wa_vals.keys())
-if missing:
-    raise RuntimeError(f"Missing SSM parameters: {', '.join(sorted(missing))}")
+# Fallback mechanism: SSM first, then environment variables
+WA_PHONE_ID = wa_vals.get("WA_PHONE_ID") \
+    or os.getenv("WA_PHONE_ID") \
+    or os.getenv("WHATSAPP_PHONE_ID")
 
-WA_PHONE_ID = wa_vals["WA_PHONE_ID"]
-WA_TOKEN = wa_vals["WA_TOKEN"]
+WA_TOKEN = wa_vals.get("WA_TOKEN") \
+    or os.getenv("WA_TOKEN") \
+    or os.getenv("WHATSAPP_TOKEN")
+
+TEMPLATE_NAME = wa_vals.get("WA_TEMPLATE_NAME") \
+    or os.getenv("WA_TEMPLATE_NAME", "alert_template")
+
+TEMPLATE_LANG = wa_vals.get("WA_TEMPLATE_LANG") \
+    or os.getenv("WA_TEMPLATE_LANG", "en")
+
+# Validate required parameters
+missing = []
+if not WA_PHONE_ID: missing.append("WA_PHONE_ID")
+if not WA_TOKEN: missing.append("WA_TOKEN")
+if missing:
+    raise RuntimeError(f"Missing required WhatsApp config: {', '.join(missing)}")
 
 # # Load environment variables (for local development)
 # from dotenv import load_dotenv
@@ -49,7 +67,7 @@ WA_TOKEN = wa_vals["WA_TOKEN"]
 # WA_PHONE_ID = os.getenv("WA_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID")
 # WA_TOKEN = os.getenv("WA_TOKEN") or os.getenv("WHATSAPP_TOKEN")
 
-STREAMLIT_URL = "https://hrtowii-fyp-proj-japfa-cctvstreamlit-app-nt7gbx.streamlit.app/"
+STREAMLIT_URL = "http://54.251.178.251:8501/"
 
 wa = None
 if WhatsApp is not None and WA_PHONE_ID and WA_TOKEN:
@@ -100,25 +118,6 @@ def wa_send_image_url(to: str, image_url: str, caption: str | None = None):
         "image": {"link": image_url, **({"caption": caption} if caption else {})}
     }
     return wa_send(payload)
-
-# Update to your approved template + language
-# Fetch optional template settings from SSM (with fallback to defaults)
-try:
-    template_resp = ssm.get_parameters(
-        Names=[f"{PREFIX}/WA_TEMPLATE_NAME", f"{PREFIX}/WA_TEMPLATE_LANG"],
-        WithDecryption=True
-    )
-    template_vals = {p["Name"].split("/")[-1]: p["Value"] for p in template_resp.get("Parameters", [])}
-    TEMPLATE_NAME = template_vals.get("WA_TEMPLATE_NAME", "alert_template")
-    TEMPLATE_LANG = template_vals.get("WA_TEMPLATE_LANG", "en")
-except Exception:
-    # Fallback to defaults if SSM fetch fails
-    TEMPLATE_NAME = "alert_template"
-    TEMPLATE_LANG = "en"
-
-# # Load from environment variables (for local development)
-# TEMPLATE_NAME = os.getenv("WA_TEMPLATE_NAME", "alert_template")
-# TEMPLATE_LANG = os.getenv("WA_TEMPLATE_LANG", "en")
 
 def wa_send_violation_template(
     to: str,

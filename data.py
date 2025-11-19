@@ -5,8 +5,11 @@ import snowflake.connector
 import uuid
 import random
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+import os
+# from dotenv import load_dotenv
 import boto3
 
+# AWS SSM Configuration (for AWS deployment)
 # If your instance/profile already has region set, you can omit region_name
 ssm = boto3.client("ssm", region_name="ap-southeast-1")
 
@@ -30,21 +33,30 @@ resp = ssm.get_parameters(
 # Build a dict keyed by the short name (e.g., "JAPFA_user")
 vals = {p["Name"].split("/")[-1]: p["Value"] for p in resp.get("Parameters", [])}
 
-# Optional: warn if some were not found
-missing = set(NAMES) - set(vals.keys())
-if missing:
-    raise RuntimeError(f"Missing SSM parameters: {', '.join(sorted(missing))}")
+# Fallback mechanism: SSM first, then environment variables
+username          = vals.get("JAPFA_user") or os.getenv("JAPFA_user")
+password          = vals.get("JAPFA_password") or os.getenv("JAPFA_password")
+snowflake_account = vals.get("JAPFA_account") or os.getenv("JAPFA_account")
+database          = vals.get("JAPFA_database") or os.getenv("JAPFA_database")
+schema            = vals.get("JAPFA_schema") or os.getenv("JAPFA_schema")
+warehouse         = vals.get("JAPFA_warehouse") or os.getenv("JAPFA_warehouse")
+role              = vals.get("JAPFA_role") or os.getenv("JAPFA_role")
 
-# Use them directly
-username          = vals["JAPFA_user"]
-password          = vals["JAPFA_password"]
-snowflake_account = vals["JAPFA_account"]
-database          = vals["JAPFA_database"]
-schema            = vals["JAPFA_schema"]
-warehouse         = vals["JAPFA_warehouse"]
-role              = vals["JAPFA_role"]
+# Validate required parameters
+missing = []
+if not username: missing.append("JAPFA_user")
+if not password: missing.append("JAPFA_password")
+if not snowflake_account: missing.append("JAPFA_account")
+if not database: missing.append("JAPFA_database")
+if not schema: missing.append("JAPFA_schema")
+if not warehouse: missing.append("JAPFA_warehouse")
+if not role: missing.append("JAPFA_role")
+
+if missing:
+    raise RuntimeError(f"Missing required Snowflake parameters: {', '.join(missing)}")
 
 # # Load environment variables (for local development or production)
+# from dotenv import load_dotenv
 # load_dotenv()
 # username = os.getenv("JAPFA_user")
 # password = os.getenv("JAPFA_password")
