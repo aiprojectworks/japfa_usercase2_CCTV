@@ -10,7 +10,7 @@ import boto3
 # If your instance/profile already has region set, you can omit region_name
 ssm = boto3.client("ssm", region_name="ap-southeast-1")
 
-PREFIX = "/japfa_usercase2_CCTV/"
+PREFIX = "/japfa_usercase2_CCTV"
 NAMES  = [
     "JAPFA_user",
     "JAPFA_password",
