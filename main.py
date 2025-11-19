@@ -1,7 +1,6 @@
 from data import DataParser, get_snowflake_connection
 import logging
 import os
-from dotenv import load_dotenv
 import threading
 import time
 from typing import Any, Optional
@@ -18,57 +17,39 @@ import boto3
 
 WhatsApp = None  # type: ignore
 
-# load_dotenv()
-
-# WA_PHONE_ID = os.getenv("WA_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID") 
-# WA_TOKEN = os.getenv("WA_TOKEN") or os.getenv("WHATSAPP_TOKEN") 
-# STREAMLIT_URL = "http://47.130.180.84:8501/"
-
-# # Update to your approved template + language
-# TEMPLATE_NAME = os.getenv("WA_TEMPLATE_NAME", "alert_template")
-# TEMPLATE_LANG = os.getenv("WA_TEMPLATE_LANG", "en")
-
-# SSM client (set region if not already configured)
+# If your instance/profile already has region set, you can omit region_name
 ssm = boto3.client("ssm", region_name="ap-southeast-1")
 
-PREFIX = "/japfa_usercase2_CCTV"
-NAMES = [
+PREFIX = "/poultry-swine"
+WA_NAMES = [
     "WA_PHONE_ID",
     "WA_TOKEN",
-    "WA_TEMPLATE_NAME",
-    "WA_TEMPLATE_LANG",
 ]
 
+# Fetch WhatsApp credentials from SSM
 resp = ssm.get_parameters(
-    Names=[f"{PREFIX}/{n}" for n in NAMES],
+    Names=[f"{PREFIX}/{n}" for n in WA_NAMES],
     WithDecryption=True
 )
-vals = {p["Name"].split("/")[-1]: p["Value"] for p in resp.get("Parameters", [])}
 
-# Hard-coded (as in your code)
-STREAMLIT_URL = "http://54.251.178.251:8501/"
+# Build a dict keyed by the short name
+wa_vals = {p["Name"].split("/")[-1]: p["Value"] for p in resp.get("Parameters", [])}
 
-# Resolve with precedence: SSM -> env var(s) -> default (for template fields)
-WA_PHONE_ID = vals.get("WA_PHONE_ID") \
-    or os.getenv("WA_PHONE_ID") \
-    or os.getenv("WHATSAPP_PHONE_ID")
-
-WA_TOKEN = vals.get("WA_TOKEN") \
-    or os.getenv("WA_TOKEN") \
-    or os.getenv("WHATSAPP_TOKEN")
-
-TEMPLATE_NAME = vals.get("WA_TEMPLATE_NAME") \
-    or os.getenv("WA_TEMPLATE_NAME", "alert_template")
-
-TEMPLATE_LANG = vals.get("WA_TEMPLATE_LANG") \
-    or os.getenv("WA_TEMPLATE_LANG", "en")
-
-# Optional sanity check for required values
-missing = []
-if not WA_PHONE_ID: missing.append("WA_PHONE_ID")
-if not WA_TOKEN:    missing.append("WA_TOKEN")
+# Optional: warn if some were not found
+missing = set(WA_NAMES) - set(wa_vals.keys())
 if missing:
-    raise RuntimeError(f"Missing required WhatsApp config: {', '.join(missing)}")
+    raise RuntimeError(f"Missing SSM parameters: {', '.join(sorted(missing))}")
+
+WA_PHONE_ID = wa_vals["WA_PHONE_ID"]
+WA_TOKEN = wa_vals["WA_TOKEN"]
+
+# # Load environment variables (for local development)
+# from dotenv import load_dotenv
+# load_dotenv()
+# WA_PHONE_ID = os.getenv("WA_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID")
+# WA_TOKEN = os.getenv("WA_TOKEN") or os.getenv("WHATSAPP_TOKEN")
+
+STREAMLIT_URL = "https://hrtowii-fyp-proj-japfa-cctvstreamlit-app-nt7gbx.streamlit.app/"
 
 wa = None
 if WhatsApp is not None and WA_PHONE_ID and WA_TOKEN:
@@ -119,6 +100,25 @@ def wa_send_image_url(to: str, image_url: str, caption: str | None = None):
         "image": {"link": image_url, **({"caption": caption} if caption else {})}
     }
     return wa_send(payload)
+
+# Update to your approved template + language
+# Fetch optional template settings from SSM (with fallback to defaults)
+try:
+    template_resp = ssm.get_parameters(
+        Names=[f"{PREFIX}/WA_TEMPLATE_NAME", f"{PREFIX}/WA_TEMPLATE_LANG"],
+        WithDecryption=True
+    )
+    template_vals = {p["Name"].split("/")[-1]: p["Value"] for p in template_resp.get("Parameters", [])}
+    TEMPLATE_NAME = template_vals.get("WA_TEMPLATE_NAME", "alert_template")
+    TEMPLATE_LANG = template_vals.get("WA_TEMPLATE_LANG", "en")
+except Exception:
+    # Fallback to defaults if SSM fetch fails
+    TEMPLATE_NAME = "alert_template"
+    TEMPLATE_LANG = "en"
+
+# # Load from environment variables (for local development)
+# TEMPLATE_NAME = os.getenv("WA_TEMPLATE_NAME", "alert_template")
+# TEMPLATE_LANG = os.getenv("WA_TEMPLATE_LANG", "en")
 
 def wa_send_violation_template(
     to: str,
@@ -216,7 +216,7 @@ class ViolationMonitor:
     def send_new_violation_alert(self, record, chat_id):
     # Send alert for new violation to specific WhatsApp chat (RAW API)
         case_url = f"{STREAMLIT_URL}/?case_id={record.id}"
-        to_number = str(6596370843)#chat_id change my number to chatid after testing
+        to_number = str(chat_id)#chat_id change my number to chatid after testing
         # Use creation timezone directly
         creation_tz = getattr(record, 'creation_tz', 'Asia/Singapore')
         tz_name = creation_tz.split("/")[-1] if "/" in creation_tz else creation_tz
@@ -849,7 +849,7 @@ def create_web_app():
 def run_web_server():
     """Run the Flask web server."""
     app = create_web_app()
-    port = int(5001)
+    port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port, debug=False)
 
 def main() -> None:

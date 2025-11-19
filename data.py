@@ -1,18 +1,16 @@
 from datetime import datetime
 from dataclasses import dataclass
 from typing import List
-import os
 import snowflake.connector
-from dotenv import load_dotenv
 import uuid
 import random
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import boto3
 
 # If your instance/profile already has region set, you can omit region_name
 ssm = boto3.client("ssm", region_name="ap-southeast-1")
 
-PREFIX = "/japfa_usercase2_CCTV"
+PREFIX = "/japfa_usercase2_CCTV/"
 NAMES  = [
     "JAPFA_user",
     "JAPFA_password",
@@ -72,18 +70,18 @@ def get_snowflake_connection():
 
 def get_system_timezone():
     """Get the system's current timezone"""
+    local_tz = datetime.now().astimezone().tzinfo
+    # Prefer the IANA key if zoneinfo provided it
+    tz_key = getattr(local_tz, "key", None)
+    if tz_key:
+        return tz_key
+    tz_name = str(local_tz)
     try:
-        # Get timezone name instead of just str() representation
-        tz = datetime.now().astimezone().tzinfo
-        if hasattr(tz, 'zone'):
-            return tz.zone
-        elif hasattr(tz, 'key'):
-            return tz.key
-        else:
-            # Fallback to a known timezone
-            return "UTC"
-    except Exception:
-        return "UTC"
+        ZoneInfo(tz_name)
+        return tz_name
+    except ZoneInfoNotFoundError:
+        # Fallback to deployment default
+        return "Asia/Singapore"
 
 @dataclass
 class ViolationRecord:
@@ -357,10 +355,15 @@ class DataParser:
             #     datetime.now().strftime("%m/%d/%y %I:%M %p") if use_now_timestamp else src.timestamp
             # )
             system_tz = get_system_timezone()
+            try:
+                system_zone = ZoneInfo(system_tz)
+            except ZoneInfoNotFoundError:
+                system_tz = "Asia/Singapore"
+                system_zone = ZoneInfo(system_tz)
             # Create timestamp using system timezone
             if use_now_timestamp:
                 # Create current time in system timezone
-                now_local = datetime.now(ZoneInfo(system_tz))
+                now_local = datetime.now(system_zone)
                 timestamp_str = now_local.strftime("%m/%d/%y %I:%M %p")
             else:
                 timestamp_str = src.timestamp
