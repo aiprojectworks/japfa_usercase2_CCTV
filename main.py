@@ -61,11 +61,13 @@ if not WA_TOKEN: missing.append("WA_TOKEN")
 if missing:
     raise RuntimeError(f"Missing required WhatsApp config: {', '.join(missing)}")
 
-# # Load environment variables (for local development)
+# Load environment variables (for local development)
 # from dotenv import load_dotenv
 # load_dotenv()
 # WA_PHONE_ID = os.getenv("WA_PHONE_ID") or os.getenv("WHATSAPP_PHONE_ID")
 # WA_TOKEN = os.getenv("WA_TOKEN") or os.getenv("WHATSAPP_TOKEN")
+# TEMPLATE_NAME = os.getenv("WA_TEMPLATE_NAME", "alert_template")
+# TEMPLATE_LANG = os.getenv("WA_TEMPLATE_LANG", "en")
 
 STREAMLIT_URL = "http://54.251.178.251:8501/"
 
@@ -317,12 +319,7 @@ class ViolationMonitor:
 
         while self.monitoring_active:
             try:
-                # Periodic chat ID sync (every 12 cycles = 1 minute)
-                self.sync_cycle_counter += 1
-                if self.sync_cycle_counter >= 12:
-                    self.sync_chat_ids()
-                    self.sync_cycle_counter = 0
-
+                self.sync_chat_ids()
                 temp_parser = DataParser()
                 current_records = temp_parser.parse()
                 current_count = len(current_records)
